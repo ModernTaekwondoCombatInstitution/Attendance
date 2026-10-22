@@ -1,7 +1,9 @@
 // Service worker: makes the app work offline.
 // Network first (so updates arrive as soon as you are online), cache as fallback.
+// Every request asks the server "is there a newer copy?" and skips the browser's own cache,
+// so a new version shows up on the phone right after it is on GitHub.
 // When you change any app file, bump CACHE_VERSION so phones refresh their copy.
-const CACHE_VERSION = 'mt-attendance-v2';
+const CACHE_VERSION = 'mt-attendance-v3';
 const CORE = [
   './',
   'index.html',
@@ -18,7 +20,13 @@ const CORE = [
 ];
 
 self.addEventListener('install', (e) => {
-  e.waitUntil(caches.open(CACHE_VERSION).then((c) => c.addAll(CORE)).then(() => self.skipWaiting()));
+  e.waitUntil(
+    caches.open(CACHE_VERSION)
+      .then((c) => Promise.all(CORE.map((u) =>
+        fetch(u, { cache: 'reload' }).then((res) => { if (!res.ok) throw new Error(u); return c.put(u, res); })
+      )))
+      .then(() => self.skipWaiting())
+  );
 });
 
 self.addEventListener('activate', (e) => {
@@ -35,7 +43,7 @@ self.addEventListener('fetch', (e) => {
   const url = new URL(req.url);
   if (url.origin !== location.origin) return; // never cache Google Sheets calls
   e.respondWith(
-    fetch(req)
+    fetch(req.url, { cache: 'no-cache' })
       .then((res) => {
         if (res && res.ok) {
           const copy = res.clone();

@@ -173,3 +173,14 @@ a{color:var(--gold)}
 code,pre{background:#120e07;border:1px solid var(--line);border-radius:8px;padding:1px 6px;font-size:13px}
 ol.steps{padding-left:20px;margin:6px 0}
 ol.steps li{margin:6px 0}
+
+/* v1.1 additions */
+.foot{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 4px 0;color:var(--muted)}
+.foot img{width:68px;height:auto;display:block}
+.foot .ver{text-align:right;font-size:13px}
+.foot .ver b{display:block;color:var(--gold);font-size:15px}
+#update{position:fixed;left:12px;right:12px;top:calc(8px + env(safe-area-inset-top));max-width:696px;margin:0 auto;z-index:90;
+  background:var(--panel2);border:1px solid var(--gold);border-radius:14px;padding:10px 12px;display:flex;align-items:center;justify-content:space-between;gap:10px;font-weight:600}
+label.pick{display:flex;align-items:center;gap:12px;background:#120e07;border:1px solid var(--line);border-radius:12px;padding:10px 12px;min-height:48px}
+label.pick input{width:22px;height:22px;accent-color:#f5c04a;flex:none}
+label.pick.dis{opacity:.45}

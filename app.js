@@ -4,6 +4,7 @@
 'use strict';
 
 /* ============ helpers ============ */
+const APP_VERSION = '1.1.0';
 const TZ = 'Asia/Kuala_Lumpur';
 const DB_NAME = 'mt-attendance', STORE = 'kv', KEY = 'data';
 const MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
@@ -31,6 +32,8 @@ const fmtDateShort = d => { const [y, m, dd] = parseDate(d); return `${pad(dd)}-
 const fmtTime = t => { if (!t) return ''; const [h, mi] = t.split(':').map(Number); return `${h % 12 || 12}:${pad(mi)} ${h >= 12 ? 'PM' : 'AM'}`; };
 const periodLabel = p => p.type === 'all' ? 'All time' : p.type === 'year' ? String(p.y) : `${MONTHS[p.m - 1]} ${p.y}`;
 const ago = ts => { if (!ts) return 'never'; const d = Math.floor((Date.now() - ts) / 86400000); return d <= 0 ? 'today' : d === 1 ? 'yesterday' : d + ' days ago'; };
+const agoLong = ts => { if (!ts) return 'never'; const m = Math.floor((Date.now() - ts) / 60000); if (m < 1) return 'just now'; if (m < 60) return m + ' min ago'; const h = Math.floor(m / 60); if (h < 24) return h + (h === 1 ? ' hour ago' : ' hours ago'); const d = Math.floor(h / 24); return d === 1 ? '1 day ago' : d + ' days ago'; };
+const fmtStamp = ts => new Intl.DateTimeFormat('en-GB', { timeZone: TZ, day: '2-digit', month: 'short', year: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true }).format(new Date(ts)).replace(/\b(am|pm)\b/, x => x.toUpperCase());
 
 const ICON = {
   school: '<path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/>',
@@ -54,15 +57,16 @@ function toast(msg) {
 /* ============ data ============ */
 let data;
 function emptyData() {
-  return { v: 1, schools: [], students: [], sessions: [], deleted: {},
-    settings: { coach: '', sheetsUrl: '', sheetsKey: '', weekStart: 0, lastBackup: 0, lastSync: 0 } };
+  return { v: 1, schools: [], students: [], sessions: [], coaches: [], syncLog: {}, deleted: {},
+    settings: { coach: '', coachId: '', sheetsUrl: '', sheetsKey: '', weekStart: 0, lastBackup: 0, lastSync: 0 } };
 }
 function normalize(d) {
   const e = emptyData();
   const o = Object.assign(e, d || {});
   o.settings = Object.assign(emptyData().settings, (d && d.settings) || {});
-  ['schools', 'students', 'sessions'].forEach(k => { if (!Array.isArray(o[k])) o[k] = []; });
+  ['schools', 'students', 'sessions', 'coaches'].forEach(k => { if (!Array.isArray(o[k])) o[k] = []; });
   if (!o.deleted || typeof o.deleted !== 'object') o.deleted = {};
+  if (!o.syncLog || typeof o.syncLog !== 'object') o.syncLog = {};
   o.sessions.forEach(s => { if (!s.marks) s.marks = {}; });
   return o;
 }
@@ -102,6 +106,21 @@ const sortedStudents = sid => data.students.filter(s => s.schoolId === sid).sort
 const getSchool = id => data.schools.find(s => s.id === id);
 const getStudent = id => data.students.find(s => s.id === id);
 const getSession = id => data.sessions.find(s => s.id === id);
+const getCoach = id => data.coaches.find(c => c.id === id);
+const myCoachName = () => { const c = getCoach(data.settings.coachId); return c ? c.name : ''; };
+const sortedCoaches = () => [...data.coaches].sort((a, b) => collator.compare(a.name, b.name));
+const isDev = sc => !!sc && sc.type === 'dev';
+function classLinks() {
+  const m = new Map();
+  data.students.forEach(st => {
+    const sc = getSchool(st.schoolId); if (!sc) return;
+    const k = norm(st.name), e = m.get(k) || { b: 0, d: 0 };
+    if (isDev(sc)) e.d++; else e.b++;
+    m.set(k, e);
+  });
+  return m;
+}
+const isBoth = (st, links) => { const e = links.get(norm(st.name)); return !!(e && e.b && e.d); };
 const cmpSession = (a, b) => (a.date + (a.time || '')).localeCompare(b.date + (b.time || ''));
 const sessionsOfSchool = sid => data.sessions.filter(s => s.schoolId === sid).sort(cmpSession);
 function inPeriod(date, p) {
@@ -150,6 +169,9 @@ function mergeData(local, remote) {
   out.schools = mergeList(local.schools, remote.schools || []);
   out.students = mergeList(local.students, remote.students || []);
   out.sessions = mergeList(local.sessions, remote.sessions || []);
+  out.coaches = mergeList(local.coaches || [], remote.coaches || []);
+  out.syncLog = Object.assign({}, remote.syncLog || {}, local.syncLog || {});
+  for (const k in (remote.syncLog || {})) out.syncLog[k] = Math.max(out.syncLog[k] || 0, remote.syncLog[k]);
   const sc = new Set(out.schools.map(s => s.id));
   out.students = out.students.filter(s => sc.has(s.schoolId));
   out.sessions = out.sessions.filter(s => sc.has(s.schoolId));
@@ -157,7 +179,8 @@ function mergeData(local, remote) {
   out.sessions.forEach(s => { for (const k in s.marks) if (!st.has(k)) delete s.marks[k]; });
   return out;
 }
-const dataForShare = () => ({ v: 1, schools: data.schools, students: data.students, sessions: data.sessions, deleted: data.deleted });
+const dataForShare = () => ({ v: 1, schools: data.schools, students: data.students, sessions: data.sessions, coaches: data.coaches, syncLog: data.syncLog, deleted: data.deleted });
+function applyMerged(m) { data.schools = m.schools; data.students = m.students; data.sessions = m.sessions; data.deleted = m.deleted; data.coaches = m.coaches; data.syncLog = m.syncLog; }
 
 /* ============ UI state ============ */
 const today0 = nowKL();
@@ -202,10 +225,16 @@ function navHTML() {
 function schoolsListHTML() {
   const q = norm(ui.q);
   if (q) {
-    const m = data.students.filter(s => norm(s.name).includes(q)).sort((a, b) => collator.compare(a.name, b.name));
-    if (!m.length) return `<div class="empty">No student found.</div>`;
-    return `<div class="list">${m.map(s => { const sc = getSchool(s.schoolId); return `<button class="item" data-act="openSchool" data-id="${s.schoolId}" data-sub="students" data-open="${s.id}">
-      <div class="grow"><div class="t">${esc(s.name)}</div><div class="s">${esc(sc ? sc.name : '')}</div></div><span class="chev">${icon('right')}</span></button>`; }).join('')}</div>`;
+    const sch = sortedSchools().filter(s => norm(s.name).includes(q));
+    const stu = data.students.filter(s => norm(s.name).includes(q)).sort((a, b) => collator.compare(a.name, b.name));
+    if (!sch.length && !stu.length) return `<div class="empty">No school or student found.</div>`;
+    const rows = sch.map(sc => { const n = data.students.filter(s => s.schoolId === sc.id).length;
+      return `<button class="item" data-act="openSchool" data-id="${sc.id}">
+        <div class="grow"><div class="t">${esc(sc.name)}</div><div class="s">${isDev(sc) ? 'Development class · ' : ''}${n} student${n === 1 ? '' : 's'}</div></div><span class="pill gold">School</span><span class="chev">${icon('right')}</span></button>`; })
+      .concat(stu.map(s => { const sc = getSchool(s.schoolId);
+      return `<button class="item" data-act="openSchool" data-id="${s.schoolId}" data-sub="students" data-open="${s.id}">
+        <div class="grow"><div class="t">${esc(s.name)}</div><div class="s">${esc(sc ? sc.name : '')}</div></div><span class="pill hol">Student</span><span class="chev">${icon('right')}</span></button>`; }));
+    return `<div class="list">${rows.join('')}</div>`;
   }
   const schools = sortedSchools();
   if (!schools.length) return `<div class="empty"><img src="logo.png" alt=""><div><b>No schools yet</b></div><div class="hint">Tap “Add school” to create your first training place.</div></div>`;
@@ -213,7 +242,7 @@ function schoolsListHTML() {
     const n = data.students.filter(s => s.schoolId === sc.id).length;
     const last = sessionsOfSchool(sc.id).filter(s => !s.holiday).pop();
     return `<button class="item" data-act="openSchool" data-id="${sc.id}">
-      <div class="grow"><div class="t">${esc(sc.name)}</div>
+      <div class="grow"><div class="t">${esc(sc.name)}${isDev(sc) ? ' <span class="pill gold">Development</span>' : ''}</div>
       <div class="s">${n} student${n === 1 ? '' : 's'}${last ? ' · last class ' + fmtDateShort(last.date) : ''}</div></div>
       <span class="chev">${icon('right')}</span></button>`;
   }).join('')}</div>`;
@@ -224,7 +253,7 @@ function viewSchools() {
   return `${topbar('Modern Taekwondo', 'Attendance')}
   ${stale ? `<div class="banner">Last backup: <b>${ago(Math.max(s.lastBackup || 0, s.lastSync || 0))}</b>. Your data lives on this phone, so please <a href="#" data-act="backup">back up now</a>.</div>` : ''}
   <div class="stack">
-    <div class="searchbox">${icon('search')}<input type="search" placeholder="Search student name…" value="${esc(ui.q)}" data-bind="q" data-live="schoolsList" autocomplete="off"></div>
+    <div class="searchbox">${icon('search')}<input type="search" placeholder="Search student or school name…" value="${esc(ui.q)}" data-bind="q" data-live="schoolsList" autocomplete="off"></div>
     <div id="schoolsList">${schoolsListHTML()}</div>
     <button class="btn primary block" data-act="addSchool">${icon('plus')} Add school</button>
   </div>`;
@@ -237,11 +266,11 @@ function studentListHTML(sc) {
   const total = studs.length;
   if (q) studs = studs.filter(s => norm(s.name).includes(q));
   if (!studs.length) return `<div class="empty">${total ? 'No student found.' : 'No students yet. Tap “Add students”.'}</div>`;
-  const all = sessionsOfSchool(sc.id);
+  const all = sessionsOfSchool(sc.id), links = classLinks();
   return `<div class="list">${studs.map((s, i) => {
     const st = studentStats(s, all);
     return `<button class="item" data-act="openStudent" data-id="${s.id}">
-      <div class="grow"><div class="t">${esc(s.name)}</div></div>
+      <div class="grow"><div class="t">${esc(s.name)}${isBoth(s, links) ? ' <span class="pill gold">Basic + Dev</span>' : ''}</div></div>
       <span class="pill ${st.pct == null ? '' : st.pct >= 75 ? 'ok' : st.pct < 40 ? 'bad' : 'gold'}">${st.tot ? st.att + '/' + st.tot : '–'}</span></button>`;
   }).join('')}</div>`;
 }
@@ -261,14 +290,14 @@ function viewSchool() {
   else body = viewReports(sc);
   return `<div class="topbar">
       <button class="iconbtn" data-act="backToSchools" aria-label="Back">${icon('left')}</button>
-      <div class="grow"><h1>${esc(sc.name)}</h1><div class="sub">Training place</div></div>
+      <div class="grow"><h1>${esc(sc.name)}</h1><div class="sub">${isDev(sc) ? 'Development class' : 'Training place'}</div></div>
       <button class="iconbtn" data-act="editSchool" aria-label="Edit school">${icon('edit')}</button>
     </div>${seg}${body}`;
 }
 
 /* ---- Calendar ---- */
 function viewCalendar(sc) {
-  const { y, m } = ui.cal, ws = data.settings.weekStart || 0;
+  const { y, m } = ui.cal, ws = 0;
   const first = dowOf(`${y}-${pad(m)}-01`), lead = (first - ws + 7) % 7, dim = daysInMonth(y, m);
   const today = nowKL().date, prefix = `${y}-${pad(m)}-`;
   const by = {};
@@ -326,7 +355,7 @@ function viewTake() {
     <div class="card stack">
       <div class="row"><div class="grow"><label class="f">Date</label><input type="date" value="${t.date}" data-bind="take.date"></div>
       <div class="grow"><label class="f">Time (Malaysia)</label><input type="time" value="${t.time}" data-bind="take.time"></div></div>
-      <div><label class="f">Notes for this class (optional)</label><textarea data-bind="take.note" placeholder="e.g. Ali is sick, Mei will replace on Saturday…">${esc(t.note)}</textarea></div>
+      <div><label class="f">Description</label><textarea data-bind="take.note">${esc(t.note)}</textarea></div>
     </div>
     <div class="takebar"><div class="counts">
       <div class="c ok">${p}<small>Present</small></div><div class="c bad">${a}<small>Absent</small></div><div class="c">${u}<small>Not marked</small></div></div>
@@ -381,28 +410,35 @@ function viewOverview() {
 }
 
 /* ---- Settings ---- */
+function coachesCardHTML() {
+  const coaches = sortedCoaches(), me = data.settings.coachId;
+  return `<div class="card stack"><h2>Coaches</h2>
+    <div><label class="f">I am (saved with each attendance)</label><select data-bind="settings.coachId" data-save="1" data-rerender="1">${opts([['', 'Choose…'], ...coaches.map(c => [c.id, c.name])], me)}</select></div>
+    ${coaches.length ? `<div class="list">${coaches.map(c => { const t = data.syncLog[c.id];
+      return `<button class="item" data-act="coachModal" data-id="${c.id}"><div class="grow"><div class="t">${esc(c.name)}${c.id === me ? ' <span class="pill gold">You</span>' : ''}</div>
+        <div class="s">${t ? 'Last sync: ' + agoLong(t) + ' · ' + fmtStamp(t) : 'Never synced'}</div></div><span class="chev">${icon('edit')}</span></button>`; }).join('')}</div>` : '<div class="hint">No coaches yet. Add yourself and the other coach.</div>'}
+    <button class="btn block" data-act="coachModal">${icon('plus')} Add coach</button>
+  </div>`;
+}
 function viewSettings() {
   const s = data.settings, e = ui.exp;
   const schools = sortedSchools();
-  const studs = e.schoolId !== 'all' ? sortedStudents(e.schoolId) : [];
+  const studs = e.schoolId !== 'all' && e.schoolId !== '__combo' ? sortedStudents(e.schoolId) : [];
   const sheetsOn = !!s.sheetsUrl;
   return `${topbar('Settings', 'Export · Backup · Sync')}
   <div class="stack">
-    <div class="card stack"><h2>Coach</h2>
-      <div><label class="f">Your name (saved with each attendance)</label><input type="text" value="${esc(s.coach)}" data-bind="settings.coach" data-save="1" placeholder="e.g. Coach Eugene"></div>
-      <div><label class="f">Calendar week starts on</label><select data-bind="settings.weekStart" data-num="1" data-save="1" data-rerender="1">${opts([[0, 'Sunday'], [1, 'Monday']], s.weekStart)}</select></div>
-    </div>
+    ${coachesCardHTML()}
 
     <div class="card stack"><h2>Export to Excel / CSV</h2>
-      <div><label class="f">School</label><select data-bind="exp.schoolId" data-rerender="1">${opts([['all', 'All schools (mixed together)'], ...schools.map(x => [x.id, x.name])], e.schoolId)}</select></div>
-      ${e.schoolId !== 'all' ? `<div><label class="f">Student</label><select data-bind="exp.studentId">${opts([['all', 'All students'], ...studs.map(x => [x.id, x.name])], e.studentId)}</select></div>` : ''}
+      <div><label class="f">School</label><select data-bind="exp.schoolId" data-rerender="1">${opts([['all', 'All schools (mixed together)'], ['__combo', 'Basic + Development students (combined)'], ...schools.map(x => [x.id, x.name])], e.schoolId)}</select></div>
+      ${e.schoolId !== 'all' && e.schoolId !== '__combo' ? `<div><label class="f">Student</label><select data-bind="exp.studentId">${opts([['all', 'All students'], ...studs.map(x => [x.id, x.name])], e.studentId)}</select></div>` : ''}
       <div><label class="f">Period</label>${periodControls('exp.period')}</div>
       <div class="row"><button class="btn primary grow" data-act="exportXlsx">Download Excel</button><button class="btn grow" data-act="exportCsv">Download CSV</button></div>
-      <div class="hint">Excel has several sheets: Summary, All Schools (one block per school), a sheet per school, Records and Sessions (with notes). CSV is the Records list.</div>
+      <div class="hint">Excel has several sheets: Summary, All Schools (one block per school), a sheet per school, Records and Sessions (with descriptions). “Basic + Development” shows students who are in both a basic and a development school, side by side. CSV is the Records list.</div>
     </div>
 
     <div class="card stack"><h2>Google Sheets sync</h2>
-      <div class="hint">Sends everything to your Google Sheet, and also shares the data between both coaches’ phones. ${s.lastSync ? 'Last sync: <b>' + ago(s.lastSync) + '</b>.' : ''}</div>
+      <div class="hint">Sync downloads the other coach’s attendance, merges it with yours, then uploads everything to your Google Sheet. ${sheetsOn ? '' : '<b>Not set up yet.</b> Fill in the two boxes below first.'}</div>
       <div><label class="f">Web App URL</label><input type="url" value="${esc(s.sheetsUrl)}" data-bind="settings.sheetsUrl" data-save="1" placeholder="https://script.google.com/macros/s/…/exec"></div>
       <div><label class="f">Secret key (same as in the script)</label><input type="text" value="${esc(s.sheetsKey)}" data-bind="settings.sheetsKey" data-save="1" placeholder="your-secret-word"></div>
       <div class="row"><button class="btn primary grow" data-act="syncNow" ${sheetsOn ? '' : 'disabled'}>Sync now</button><button class="btn grow" data-act="testSync" ${sheetsOn ? '' : 'disabled'}>Test</button></div>
@@ -420,9 +456,21 @@ function viewSettings() {
       <div class="hint" id="storageInfo"></div>
       <button class="btn danger block" data-act="eraseAll">Erase all data on this phone</button>
     </div>
-    <img class="logo-big" src="logo.png" alt="Modern Taekwondo">
+    <div class="foot"><img src="logo.png" alt="Modern Taekwondo"><div class="ver"><b>Version ${APP_VERSION}</b>Modern Taekwondo Attendance</div></div>
   </div>`;
 }
+
+/* ============ back button support ============ */
+let applyingPop = false;
+const navState = () => ({ t: ui.tab, s: ui.schoolId, u: ui.sub, k: !!ui.take });
+function syncHistory() {
+  if (applyingPop) return;
+  const cur = history.state, now = navState();
+  if (!cur) { history.replaceState(now, ''); return; }
+  if (cur.t === now.t && cur.s === now.s && cur.k === now.k) { if (cur.u !== now.u) history.replaceState(now, ''); return; }
+  history.pushState(now, '');
+}
+function leaveTake() { if (history.state && history.state.k) history.back(); else render(false); }
 
 /* ============ render ============ */
 function render(keepScroll = true) {
@@ -436,6 +484,7 @@ function render(keepScroll = true) {
   app.className = ui.take ? 'no-nav' : '';
   app.innerHTML = html + (ui.take ? '' : navHTML());
   window.scrollTo(0, keepScroll ? y : 0);
+  syncHistory();
   if (ui.tab === 'settings' && !ui.take) storageInfo();
 }
 async function storageInfo() {
@@ -459,28 +508,37 @@ const mval = id => ($('#' + id) ? $('#' + id).value : '');
 function modalAddSchool() {
   showModal(`<h3>Add school</h3><label class="f">School / training place name</label>
     <input type="text" id="m-name" data-enter="1" placeholder="e.g. SJK(C) Seremban" autocomplete="off">
+    <label class="f" style="margin-top:12px">Class type</label><select id="m-type"><option value="basic">Basic class (Mon–Fri)</option><option value="dev">Development class (Saturday)</option></select>
     <div class="actions"><button class="btn" data-act="closeModal">Cancel</button><button class="btn primary" data-act="saveAddSchool">Add</button></div>`);
 }
 function modalEditSchool() {
   const sc = getSchool(ui.schoolId);
   showModal(`<h3>Edit school</h3><label class="f">Name</label><input type="text" id="m-name" data-enter="1" value="${esc(sc.name)}">
+    <label class="f" style="margin-top:12px">Class type</label><select id="m-type"><option value="basic" ${isDev(sc) ? '' : 'selected'}>Basic class (Mon–Fri)</option><option value="dev" ${isDev(sc) ? 'selected' : ''}>Development class (Saturday)</option></select>
     <div class="actions"><button class="btn danger" data-act="delSchool">Delete</button><button class="btn primary" data-act="saveSchool">Save</button></div>
     <div class="actions" style="margin-top:8px"><button class="btn" data-act="closeModal">Close</button></div>`);
 }
 function modalAddStudents() {
   showModal(`<h3>Add students</h3><label class="f">One name per line. You can paste a whole list.</label>
     <textarea id="m-names" style="min-height:160px" placeholder="Ali bin Ahmad&#10;Tan Mei Ling&#10;Kumar a/l Raj"></textarea>
+    <button class="btn block" style="margin-top:12px" data-act="copyModal">Copy from another school</button>
     <div class="actions"><button class="btn" data-act="closeModal">Cancel</button><button class="btn primary" data-act="saveStudents">Add</button></div>`);
 }
 function modalStudent(id) {
   const st = getStudent(id); if (!st) return;
   const sc = getSchool(st.schoolId), all = sessionsOfSchool(st.schoolId), cur = sessionsFor(st.schoolId, ui.period);
   const a = studentStats(st, all), c = studentStats(st, cur);
+  const linked = data.students.filter(x => norm(x.name) === norm(st.name));
+  let comboRows = '';
+  if (linked.length > 1) {
+    let ca = 0, ct = 0; linked.forEach(x => { const r = studentStats(x, sessionsOfSchool(x.schoolId)); ca += r.att; ct += r.tot; });
+    comboRows = `<div class="kv"><span>All classes combined</span><b>${ca} of ${ct}${ct ? ' (' + Math.round(ca * 100 / ct) + '%)' : ''}</b></div><div class="kv"><span>Also listed in</span><b style="text-align:right">${linked.filter(x => x.id !== st.id).map(x => esc((getSchool(x.schoolId) || {}).name || '')).join(', ')}</b></div>`;
+  }
   const hist = all.filter(s => !s.holiday && s.marks && s.marks[st.id] !== undefined).reverse();
-  showModal(`<h3>${esc(st.name)}</h3><div class="hint" style="margin:-8px 0 10px">${esc(sc ? sc.name : '')}</div>
+  showModal(`<h3>${esc(st.name)}${isBoth(st, classLinks()) ? ' <span class="pill gold">Basic + Dev</span>' : ''}</h3><div class="hint" style="margin:-8px 0 10px">${esc(sc ? sc.name : '')}</div>
     <div class="card" style="padding:8px 12px">
       <div class="kv"><span>All time</span><b>${a.att} of ${a.tot} classes${a.pct == null ? '' : ' (' + a.pct + '%)'}</b></div>
-      <div class="kv"><span>${periodLabel(ui.period)}</span><b>${c.att} of ${c.tot}${c.pct == null ? '' : ' (' + c.pct + '%)'}</b></div></div>
+      <div class="kv"><span>${periodLabel(ui.period)}</span><b>${c.att} of ${c.tot}${c.pct == null ? '' : ' (' + c.pct + '%)'}</b></div>${comboRows}</div>
     <div class="section-title" style="margin:14px 0 8px">History</div>
     ${hist.length ? `<div class="hist">${hist.map(s => `<div><span class="d">${fmtDateShort(s.date)} · ${fmtTime(s.time)}${s.note ? ' · ' + esc(s.note.slice(0, 40)) : ''}</span>${s.marks[st.id] ? '<span class="pill ok">✓ Came</span>' : '<span class="pill bad">✗ Absent</span>'}</div>`).join('')}</div>` : '<div class="hint">No attendance yet.</div>'}
     <label class="f" style="margin-top:14px">Rename</label><input type="text" id="m-name" data-enter="1" value="${esc(st.name)}" data-sid="${st.id}">
@@ -508,6 +566,28 @@ function modalSheetsHelp() {
     <div class="actions"><button class="btn primary" data-act="closeModal">Close</button></div>`);
 }
 
+function modalCopy(srcId) {
+  const others = sortedSchools().filter(s => s.id !== ui.schoolId);
+  if (!others.length) return toast('There is no other school yet.');
+  if (!others.some(s => s.id === srcId)) srcId = others[0].id;
+  const have = new Set(sortedStudents(ui.schoolId).map(s => norm(s.name)));
+  const list = sortedStudents(srcId);
+  showModal(`<h3>Copy students</h3><div class="hint" style="margin:-6px 0 10px">Tick the students to add to this school. Names are copied exactly, so basic and development records stay linked.</div>
+    <label class="f">From school</label><select id="m-src">${opts(others.map(s => [s.id, s.name]), srcId)}</select>
+    <div class="stack" style="margin-top:12px">${list.length ? list.map(st => { const dup = have.has(norm(st.name));
+      return `<label class="pick ${dup ? 'dis' : ''}"><input type="checkbox" class="cp" value="${st.id}" ${dup ? 'disabled' : ''}><span>${esc(st.name)}${dup ? ' <span class="hint">(already here)</span>' : ''}</span></label>`; }).join('') : '<div class="hint">That school has no students.</div>'}</div>
+    <div class="actions"><button class="btn" data-act="copyAll">Select all</button><button class="btn primary" data-act="saveCopy">Add selected</button></div>
+    <div class="actions" style="margin-top:8px"><button class="btn" data-act="closeModal">Cancel</button></div>`);
+}
+function modalCoach(id) {
+  const c = id && getCoach(id);
+  showModal(`<h3>${c ? 'Edit coach' : 'Add coach'}</h3><label class="f">Coach name</label>
+    <input type="text" id="m-name" data-enter="1" value="${esc(c ? c.name : '')}" autocomplete="off">
+    <div class="actions">${c ? `<button class="btn danger" data-act="delCoach" data-id="${c.id}">Remove</button>` : `<button class="btn" data-act="closeModal">Cancel</button>`}
+    <button class="btn primary" data-act="saveCoach" data-id="${c ? c.id : ''}">Save</button></div>
+    ${c ? '<div class="actions" style="margin-top:8px"><button class="btn" data-act="closeModal">Close</button></div>' : ''}`);
+}
+
 /* ============ export ============ */
 const autoWidth = rows => {
   const w = [];
@@ -523,7 +603,7 @@ function matrixRows(sc, studs, sess) {
     const x = studentStats(st, sess);
     rows.push([st.name, ...sess.map(s => s.holiday ? '–' : s.marks[st.id] === true ? '✓' : s.marks[st.id] === false ? '✗' : ''), x.att, x.tot, x.pct == null ? '' : x.pct]);
   }
-  rows.push(['Note', ...sess.map(s => s.holiday ? (s.label || '') : (s.note || '')), '', '', '']);
+  rows.push(['Description', ...sess.map(s => s.holiday ? (s.label || '') : (s.note || '')), '', '', '']);
   rows.push(['Coach', ...sess.map(s => s.holiday ? '' : (s.coach || '')), '', '', '']);
   return rows;
 }
@@ -531,8 +611,8 @@ function buildSheets(opt) {
   const schoolId = opt.schoolId || 'all', studentId = opt.studentId || 'all', period = opt.period || { type: 'all' };
   const schools = sortedSchools().filter(s => schoolId === 'all' || s.id === schoolId);
   const sum = [['School', 'Student', 'Classes attended', 'Classes recorded', 'Absent', 'Attendance %']];
-  const rec = [['School', 'Student', 'Date', 'Day', 'Time', 'Status', 'Note', 'Coach']];
-  const ses = [['School', 'Date', 'Day', 'Time', 'Type', 'Holiday reason', 'Present', 'Absent', 'Note', 'Coach']];
+  const rec = [['School', 'Student', 'Date', 'Day', 'Time', 'Status', 'Description', 'Coach', 'Class type']];
+  const ses = [['School', 'Date', 'Day', 'Time', 'Type', 'Holiday reason', 'Present', 'Absent', 'Description', 'Coach', 'Class type']];
   const all = [], per = [];
   for (const sc of schools) {
     let studs = sortedStudents(sc.id); if (studentId !== 'all') studs = studs.filter(s => s.id === studentId);
@@ -544,12 +624,12 @@ function buildSheets(opt) {
       sum.push([sc.name, st.name, x.att, x.tot, x.tot - x.att, x.pct == null ? '' : x.pct]);
       for (const s of sess) {
         if (s.holiday || s.marks[st.id] === undefined) continue;
-        rec.push([sc.name, st.name, s.date, DOWS[dowOf(s.date)], fmtTime(s.time), s.marks[st.id] ? 'Present' : 'Absent', s.note || '', s.coach || '']);
+        rec.push([sc.name, st.name, s.date, DOWS[dowOf(s.date)], fmtTime(s.time), s.marks[st.id] ? 'Present' : 'Absent', s.note || '', s.coach || '', isDev(sc) ? 'Development' : 'Basic']);
       }
     }
     for (const s of sess) {
       let p = 0, a = 0; studs.forEach(st => { if (s.marks[st.id] === true) p++; else if (s.marks[st.id] === false) a++; });
-      ses.push([sc.name, s.date, DOWS[dowOf(s.date)], s.holiday ? '' : fmtTime(s.time), s.holiday ? 'Holiday' : 'Class', s.holiday ? (s.label || '') : '', s.holiday ? '' : p, s.holiday ? '' : a, s.holiday ? '' : (s.note || ''), s.holiday ? '' : (s.coach || '')]);
+      ses.push([sc.name, s.date, DOWS[dowOf(s.date)], s.holiday ? '' : fmtTime(s.time), s.holiday ? 'Holiday' : 'Class', s.holiday ? (s.label || '') : '', s.holiday ? '' : p, s.holiday ? '' : a, s.holiday ? '' : (s.note || ''), s.holiday ? '' : (s.coach || ''), isDev(sc) ? 'Development' : 'Basic']);
     }
   }
   const used = new Set(['summary', 'all schools', 'records', 'sessions']);
@@ -562,18 +642,61 @@ function buildSheets(opt) {
   sheets.push({ name: 'Records', rows: rec }, { name: 'Sessions', rows: ses });
   return sheets;
 }
+function comboGroups() {
+  const g = new Map();
+  data.students.forEach(st => {
+    const sc = getSchool(st.schoolId); if (!sc) return;
+    const k = norm(st.name), e = g.get(k) || { name: st.name, entries: [], b: false, d: false };
+    e.entries.push(st); if (isDev(sc)) e.d = true; else e.b = true; g.set(k, e);
+  });
+  return [...g.values()].filter(e => e.b && e.d).sort((a, b) => collator.compare(a.name, b.name));
+}
+function buildCombinedSheets(period) {
+  const groups = comboGroups();
+  if (!groups.length) return [
+    { name: 'Basic + Development', rows: [['No student is listed in both a Basic school and a Development school yet.'], ['Tip: use “Copy from another school” when adding students to the Development class, so the names match.']] },
+    { name: 'Combined Summary', rows: [['No data']] }, { name: 'Records', rows: [['No data']] }];
+  const schoolIds = new Set(); groups.forEach(g => g.entries.forEach(s => schoolIds.add(s.schoolId)));
+  const cols = data.sessions.filter(s => schoolIds.has(s.schoolId) && !s.holiday && inPeriod(s.date, period) &&
+    groups.some(g => g.entries.some(st => st.schoolId === s.schoolId && s.marks[st.id] !== undefined))).sort(cmpSession);
+  const tails = ['Basic attended', 'Basic classes', 'Dev attended', 'Dev classes', 'Total attended', 'Total classes', '%'];
+  const blank = tails.map(() => '');
+  const matrix = [['Basic + Development'],
+    ['Student', ...cols.map(s => fmtDateShort(s.date)), ...tails],
+    ['Time', ...cols.map(s => fmtTime(s.time)), ...blank],
+    ['Class', ...cols.map(s => isDev(getSchool(s.schoolId)) ? 'Development' : 'Basic'), ...blank],
+    ['School', ...cols.map(s => getSchool(s.schoolId).name), ...blank]];
+  const summary = [['Student', 'Basic school(s)', 'Development school(s)', ...tails]];
+  const rec = [['Student', 'School', 'Class type', 'Date', 'Day', 'Time', 'Status', 'Description', 'Coach']];
+  for (const g of groups) {
+    let ba = 0, bt = 0, da = 0, dt = 0;
+    g.entries.forEach(st => { const x = studentStats(st, sessionsFor(st.schoolId, period)); if (isDev(getSchool(st.schoolId))) { da += x.att; dt += x.tot; } else { ba += x.att; bt += x.tot; } });
+    const ta = ba + da, tt = bt + dt, pct = tt ? Math.round(ta * 100 / tt) : '';
+    matrix.push([g.name, ...cols.map(s => { const en = g.entries.find(st => st.schoolId === s.schoolId); const v = en ? s.marks[en.id] : undefined; return v === true ? '✓' : v === false ? '✗' : ''; }), ba, bt, da, dt, ta, tt, pct]);
+    const names = d => g.entries.filter(st => isDev(getSchool(st.schoolId)) === d).map(st => getSchool(st.schoolId).name).join(', ');
+    summary.push([g.name, names(false), names(true), ba, bt, da, dt, ta, tt, pct]);
+    g.entries.forEach(st => { const sc = getSchool(st.schoolId);
+      sessionsFor(st.schoolId, period).forEach(s => { if (s.holiday || s.marks[st.id] === undefined) return;
+        rec.push([g.name, sc.name, isDev(sc) ? 'Development' : 'Basic', s.date, DOWS[dowOf(s.date)], fmtTime(s.time), s.marks[st.id] ? 'Present' : 'Absent', s.note || '', s.coach || '']); }); });
+  }
+  return [{ name: 'Basic + Development', rows: matrix }, { name: 'Combined Summary', rows: summary }, { name: 'Records', rows: rec }];
+}
+function getExportSheets() {
+  const e = ui.exp;
+  return e.schoolId === '__combo' ? buildCombinedSheets(e.period) : buildSheets({ schoolId: e.schoolId, studentId: e.studentId, period: e.period });
+}
 function download(name, blob) {
   const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name;
   document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 3000);
 }
 function exportName(ext) {
-  const e = ui.exp, sc = e.schoolId === 'all' ? 'All-Schools' : (getSchool(e.schoolId) || { name: 'School' }).name;
+  const e = ui.exp, sc = e.schoolId === 'all' ? 'All-Schools' : e.schoolId === '__combo' ? 'Basic-and-Development' : (getSchool(e.schoolId) || { name: 'School' }).name;
   return `Modern-Taekwondo_${sc}_${periodLabel(e.period)}`.replace(/[^\w\-]+/g, '-').replace(/-+/g, '-') + '.' + ext;
 }
 function exportXlsx() {
   if (!data.schools.length) return toast('Nothing to export yet.');
   if (typeof XLSX === 'undefined') return toast('Excel library missing. Check xlsx.mini.min.js.');
-  const sheets = buildSheets({ schoolId: ui.exp.schoolId, studentId: ui.exp.studentId, period: ui.exp.period });
+  const sheets = getExportSheets();
   const wb = XLSX.utils.book_new();
   sheets.forEach(s => { const ws = XLSX.utils.aoa_to_sheet(s.rows); ws['!cols'] = autoWidth(s.rows); XLSX.utils.book_append_sheet(wb, ws, s.name); });
   const out = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
@@ -582,7 +705,7 @@ function exportXlsx() {
 }
 function exportCsv() {
   if (!data.schools.length) return toast('Nothing to export yet.');
-  const rows = buildSheets({ schoolId: ui.exp.schoolId, studentId: ui.exp.studentId, period: ui.exp.period }).find(s => s.name === 'Records').rows;
+  const rows = getExportSheets().find(s => s.name === 'Records').rows;
   const q = v => { v = String(v ?? ''); return /[",\n\r]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; };
   const csv = '﻿' + rows.map(r => r.map(q).join(',')).join('\r\n');
   download(exportName('csv'), new Blob([csv], { type: 'text/csv;charset=utf-8' }));
@@ -629,15 +752,23 @@ async function testSync() {
   catch (e) { toast('Could not connect: ' + e.message); }
 }
 async function syncNow() {
+  const me = getCoach(data.settings.coachId);
+  if (!me) return toast('Choose “I am” in Coaches first.');
+  const prev = data.syncLog[me.id];
   try {
     toast('Syncing…');
     const j = await callScript('GET');
-    if (j.data) { const m = mergeData(dataForShare(), normalize(j.data)); data.schools = m.schools; data.students = m.students; data.sessions = m.sessions; data.deleted = m.deleted; }
+    if (j.data) applyMerged(mergeData(dataForShare(), normalize(j.data)));
+    data.syncLog[me.id] = Date.now();
     await flush();
     const sheets = buildSheets({ schoolId: 'all', studentId: 'all', period: { type: 'all' } });
+    if (comboGroups().length) sheets.push(...buildCombinedSheets({ type: 'all' }).slice(0, 2));
     await callScript('POST', { data: dataForShare(), sheets });
     data.settings.lastSync = Date.now(); save(); render(); toast('Synced with Google Sheets ✓');
-  } catch (e) { toast('Sync failed: ' + e.message); }
+  } catch (e) {
+    if (prev === undefined) delete data.syncLog[me.id]; else data.syncLog[me.id] = prev;
+    save(); toast('Sync failed: ' + e.message);
+  }
 }
 
 /* ============ actions ============ */
@@ -659,11 +790,11 @@ function saveTake() {
   }
   let s = t.id && getSession(t.id);
   if (!s) { s = { id: uid(), schoolId: t.schoolId, createdAt: Date.now() }; data.sessions.push(s); }
-  Object.assign(s, { date: t.date, time: t.time, note: t.note.trim(), holiday: false, label: '', marks: Object.assign({}, t.marks), coach: data.settings.coach || s.coach || '' });
+  Object.assign(s, { date: t.date, time: t.time, note: t.note.trim(), holiday: false, label: '', marks: Object.assign({}, t.marks), coach: myCoachName() || s.coach || '' });
   touch(s); save();
   ui.selDate = t.date; ui.cal = { y: +t.date.slice(0, 4), m: +t.date.slice(5, 7) };
   ui.take = null; ui.tab = 'schools'; ui.schoolId = t.schoolId; ui.sub = 'attendance';
-  render(false); toast('Attendance saved ✓');
+  leaveTake(); toast('Attendance saved ✓');
 }
 
 const actions = {
@@ -672,19 +803,19 @@ const actions = {
     go(() => { ui.tab = 'schools'; ui.schoolId = el.dataset.id; ui.sub = el.dataset.sub || 'students'; ui.sq = ''; ui.selDate = nowKL().date; ui.cal = { y: +ui.selDate.slice(0, 4), m: +ui.selDate.slice(5, 7) }; });
     if (el.dataset.open) modalStudent(el.dataset.open);
   },
-  backToSchools() { go(() => { ui.schoolId = null; ui.q = ''; }); },
+  backToSchools() { if (history.state && history.state.s && history.length > 1) history.back(); else go(() => { ui.schoolId = null; }); },
   sub(el) { go(() => { ui.sub = el.dataset.sub; }); },
 
   addSchool: modalAddSchool,
   saveAddSchool() {
     const n = mval('m-name').trim(); if (!n) return toast('Please type a name.');
     if (data.schools.some(s => norm(s.name) === norm(n))) return toast('That school already exists.');
-    data.schools.push(touch({ id: uid(), name: n, createdAt: Date.now() })); save(); closeModal(); render(); toast('School added');
+    data.schools.push(touch({ id: uid(), name: n, type: mval('m-type') === 'dev' ? 'dev' : 'basic', createdAt: Date.now() })); save(); closeModal(); render(); toast('School added');
   },
   editSchool: modalEditSchool,
   saveSchool() {
     const n = mval('m-name').trim(); if (!n) return toast('Please type a name.');
-    const sc = getSchool(ui.schoolId); sc.name = n; touch(sc); save(); closeModal(); render();
+    const sc = getSchool(ui.schoolId); sc.name = n; sc.type = mval('m-type') === 'dev' ? 'dev' : 'basic'; touch(sc); save(); closeModal(); render();
   },
   delSchool() {
     const sc = getSchool(ui.schoolId);
@@ -729,10 +860,10 @@ const actions = {
     render();
   },
   saveTake,
-  cancelTake() { if (ui.take.dirty && !confirm('Leave without saving?')) return; const sid = ui.take.schoolId; ui.take = null; ui.schoolId = sid; ui.sub = 'attendance'; render(false); },
+  cancelTake() { if (ui.take.dirty && !confirm('Leave without saving?')) return; ui.take = null; leaveTake(); },
   delSession() {
     if (!confirm('Delete this attendance record? This cannot be undone.')) return;
-    const sid = ui.take.schoolId; deleteSession(ui.take.id); save(); ui.take = null; ui.schoolId = sid; ui.sub = 'attendance'; render(false); toast('Deleted');
+    deleteSession(ui.take.id); save(); ui.take = null; leaveTake(); toast('Deleted');
   },
 
   holidayModal(el) { modalHoliday(el.dataset.date, el.dataset.id || ''); },
@@ -743,7 +874,7 @@ const actions = {
       const targets = all ? data.schools.map(s => s.id) : [ui.schoolId];
       targets.forEach(sid => {
         if (data.sessions.some(s => s.schoolId === sid && s.date === date && s.holiday)) return;
-        data.sessions.push(touch({ id: uid(), schoolId: sid, date, time: '', note: '', holiday: true, label, marks: {}, coach: data.settings.coach || '', createdAt: Date.now() }));
+        data.sessions.push(touch({ id: uid(), schoolId: sid, date, time: '', note: '', holiday: true, label, marks: {}, coach: myCoachName(), createdAt: Date.now() }));
       });
     }
     save(); closeModal(); render(); toast('Holiday saved');
@@ -753,8 +884,7 @@ const actions = {
   exportXlsx, exportCsv, backup: backupNow,
   restorePick() { const f = $('#restoreFile'); f.value = ''; f.click(); },
   restoreMerge() {
-    const p = ui.pendingRestore; const m = mergeData(dataForShare(), p.d);
-    data.schools = m.schools; data.students = m.students; data.sessions = m.sessions; data.deleted = m.deleted;
+    const p = ui.pendingRestore; applyMerged(mergeData(dataForShare(), p.d));
     save(); closeModal(); render(); toast('Backup merged ✓');
   },
   restoreReplace() {
@@ -765,6 +895,29 @@ const actions = {
     save(); closeModal(); render(false); toast('Backup restored ✓');
   },
   syncNow, testSync, sheetsHelp: modalSheetsHelp,
+  coachModal(el) { modalCoach(el.dataset.id || ''); },
+  saveCoach(el) {
+    const n = mval('m-name').replace(/\s+/g, ' ').trim(); if (!n) return toast('Please type a name.');
+    if (data.coaches.some(c => c.id !== el.dataset.id && norm(c.name) === norm(n))) return toast('That coach already exists.');
+    if (el.dataset.id) { const c = getCoach(el.dataset.id); c.name = n; touch(c); }
+    else { const c = touch({ id: uid(), name: n, createdAt: Date.now() }); data.coaches.push(c); if (!data.settings.coachId) data.settings.coachId = c.id; }
+    save(); closeModal(); render();
+  },
+  delCoach(el) {
+    const c = getCoach(el.dataset.id); if (!c || !confirm(`Remove coach “${c.name}”? Attendance already taken keeps the name.`)) return;
+    data.coaches = data.coaches.filter(x => x.id !== c.id); tomb(c.id); delete data.syncLog[c.id];
+    if (data.settings.coachId === c.id) data.settings.coachId = '';
+    save(); closeModal(); render();
+  },
+  copyModal() { modalCopy(); },
+  copyAll() { const boxes = [...document.querySelectorAll('#modal-root .cp:not(:disabled)')]; const all = boxes.every(b => b.checked); boxes.forEach(b => { b.checked = !all; }); },
+  saveCopy() {
+    const ids = [...document.querySelectorAll('#modal-root .cp:checked')].map(b => b.value);
+    if (!ids.length) return toast('Tick at least one student.');
+    const have = new Set(sortedStudents(ui.schoolId).map(s => norm(s.name))); let n = 0;
+    ids.forEach(id => { const src = getStudent(id); if (!src || have.has(norm(src.name))) return; have.add(norm(src.name)); data.students.push(touch({ id: uid(), schoolId: ui.schoolId, name: src.name, createdAt: Date.now() })); n++; });
+    save(); closeModal(); render(); toast(`${n} student${n === 1 ? '' : 's'} added`);
+  },
   async installApp() { const e = ui.installEvt; if (!e) return; e.prompt(); try { await e.userChoice; } catch (x) { /* ignore */ } ui.installEvt = null; render(); },
   eraseAll() {
     if (!confirm('Erase ALL schools, students and attendance on this phone?')) return;
@@ -801,6 +954,7 @@ function onBind(e) {
 document.addEventListener('input', onBind);
 document.addEventListener('change', e => {
   if (e.target.id === 'restoreFile' && e.target.files[0]) { restoreFromFile(e.target.files[0]); return; }
+  if (e.target.id === 'm-src') { modalCopy(e.target.value); return; }
   onBind(e);
 });
 document.addEventListener('keydown', e => {
@@ -808,14 +962,42 @@ document.addEventListener('keydown', e => {
 });
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') flush(); });
 window.addEventListener('pagehide', flush);
+window.addEventListener('popstate', e => {
+  if ($('#modal-root').innerHTML) { closeModal(); history.pushState(navState(), ''); return; }   // back closes a popup first
+  const st = e.state; if (!st) return;
+  if (ui.take && !st.k) {
+    if (ui.take.dirty && !confirm('Leave without saving?')) { history.pushState(navState(), ''); return; }
+    ui.take = null;
+  } else if (!ui.take && st.k) { history.replaceState(navState(), ''); return; }
+  ui.tab = st.t; ui.schoolId = st.s; ui.sub = st.u;
+  applyingPop = true; render(false); applyingPop = false;
+});
 window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); ui.installEvt = e; if (ui.tab === 'settings' && !ui.take) render(); });
 
 /* ============ start ============ */
+function migrate() {
+  if (!data.coaches.length && data.settings.coach) {
+    const c = touch({ id: uid(), name: data.settings.coach, createdAt: Date.now() });
+    data.coaches.push(c); data.settings.coachId = c.id; save();
+  }
+}
+function showUpdate() {
+  if ($('#update')) return;
+  const d = document.createElement('div'); d.id = 'update';
+  d.innerHTML = '<span>A new version is ready.</span><button class="btn small primary" id="upd-btn">Refresh</button>';
+  document.body.appendChild(d); $('#upd-btn').onclick = () => location.reload();
+}
 (async function init() {
-  data = await loadData();
+  data = await loadData(); migrate();
   try { if (navigator.storage && navigator.storage.persist) navigator.storage.persist(); } catch (e) { /* ignore */ }
   render(false);
-  if ('serviceWorker' in navigator && location.protocol !== 'file:') navigator.serviceWorker.register('sw.js').catch(() => {});
-  window.__mt = { get data() { return data; }, ui, buildSheets, mergeData, studentStats, actions, nowKL };
+  if ('serviceWorker' in navigator && location.protocol !== 'file:') {
+    const had = !!navigator.serviceWorker.controller;
+    navigator.serviceWorker.addEventListener('controllerchange', () => { if (had) showUpdate(); });
+    navigator.serviceWorker.register('sw.js').then(reg => {
+      document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') reg.update().catch(() => {}); });
+    }).catch(() => {});
+  }
+  window.__mt = { get data() { return data; }, ui, buildSheets, buildCombinedSheets, mergeData, studentStats, actions, nowKL, APP_VERSION };
 })();
 })();

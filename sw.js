@@ -1,7 +1,7 @@
 // Service worker: makes the app work offline.
 // Network first (so updates arrive as soon as you are online), cache as fallback.
 // When you change any app file, bump CACHE_VERSION so phones refresh their copy.
-const CACHE_VERSION = 'mt-attendance-v1';
+const CACHE_VERSION = 'mt-attendance-v2';
 const CORE = [
   './',
   'index.html',

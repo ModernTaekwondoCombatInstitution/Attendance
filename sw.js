@@ -3,7 +3,7 @@
 // Every request asks the server "is there a newer copy?" and skips the browser's own cache,
 // so a new version shows up on the phone right after it is on GitHub.
 // When you change any app file, bump CACHE_VERSION so phones refresh their copy.
-const CACHE_VERSION = 'mt-attendance-v4';
+const CACHE_VERSION = 'mt-attendance-v5';
 const CORE = [
   './',
   'index.html',

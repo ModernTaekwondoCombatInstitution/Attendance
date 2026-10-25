@@ -4,7 +4,7 @@
 'use strict';
 
 /* ============ helpers ============ */
-const APP_VERSION = '1.2.0';
+const APP_VERSION = '1.3.0';
 const TZ = 'Asia/Kuala_Lumpur';
 const DB_NAME = 'mt-attendance', STORE = 'kv', KEY = 'data';
 const MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
@@ -1081,6 +1081,8 @@ function showUpdate() {
   data = await loadData(); migrate();
   try { if (navigator.storage && navigator.storage.persist) navigator.storage.persist(); } catch (e) { /* ignore */ }
   render(false);
+  const splash = $('#splash');
+  if (splash) { splash.addEventListener('click', () => splash.remove()); setTimeout(() => splash.remove(), 2200); }
   if ('serviceWorker' in navigator && location.protocol !== 'file:') {
     const had = !!navigator.serviceWorker.controller;
     navigator.serviceWorker.addEventListener('controllerchange', () => { if (had) showUpdate(); });

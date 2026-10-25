@@ -4,7 +4,7 @@
 'use strict';
 
 /* ============ helpers ============ */
-const APP_VERSION = '1.1.0';
+const APP_VERSION = '1.2.0';
 const TZ = 'Asia/Kuala_Lumpur';
 const DB_NAME = 'mt-attendance', STORE = 'kv', KEY = 'data';
 const MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
@@ -114,8 +114,8 @@ function classLinks() {
   const m = new Map();
   data.students.forEach(st => {
     const sc = getSchool(st.schoolId); if (!sc) return;
-    const k = norm(st.name), e = m.get(k) || { b: 0, d: 0 };
-    if (isDev(sc)) e.d++; else e.b++;
+    const k = norm(st.name), e = m.get(k) || { b: 0, d: 0, codes: new Set() };
+    if (isDev(sc)) { e.d++; e.codes.add(devCode(sc)); } else e.b++;
     m.set(k, e);
   });
   return m;
@@ -230,7 +230,7 @@ function schoolsListHTML() {
     if (!sch.length && !stu.length) return `<div class="empty">No school or student found.</div>`;
     const rows = sch.map(sc => { const n = data.students.filter(s => s.schoolId === sc.id).length;
       return `<button class="item" data-act="openSchool" data-id="${sc.id}">
-        <div class="grow"><div class="t">${esc(sc.name)}</div><div class="s">${isDev(sc) ? 'Development class · ' : ''}${n} student${n === 1 ? '' : 's'}</div></div><span class="pill gold">School</span><span class="chev">${icon('right')}</span></button>`; })
+        <div class="grow"><div class="t">${esc(sc.name)}</div><div class="s">${isDev(sc) ? schoolLabel(sc) + ' · ' : ''}${n} student${n === 1 ? '' : 's'}</div></div><span class="pill gold">School</span><span class="chev">${icon('right')}</span></button>`; })
       .concat(stu.map(s => { const sc = getSchool(s.schoolId);
       return `<button class="item" data-act="openSchool" data-id="${s.schoolId}" data-sub="students" data-open="${s.id}">
         <div class="grow"><div class="t">${esc(s.name)}</div><div class="s">${esc(sc ? sc.name : '')}</div></div><span class="pill hol">Student</span><span class="chev">${icon('right')}</span></button>`; }));
@@ -242,7 +242,7 @@ function schoolsListHTML() {
     const n = data.students.filter(s => s.schoolId === sc.id).length;
     const last = sessionsOfSchool(sc.id).filter(s => !s.holiday).pop();
     return `<button class="item" data-act="openSchool" data-id="${sc.id}">
-      <div class="grow"><div class="t">${esc(sc.name)}${isDev(sc) ? ' <span class="pill gold">Development</span>' : ''}</div>
+      <div class="grow"><div class="t">${esc(sc.name)}${isDev(sc) ? ' <span class="pill gold">' + schoolLabel(sc) + '</span>' : ''}</div>
       <div class="s">${n} student${n === 1 ? '' : 's'}${last ? ' · last class ' + fmtDateShort(last.date) : ''}</div></div>
       <span class="chev">${icon('right')}</span></button>`;
   }).join('')}</div>`;
@@ -270,7 +270,7 @@ function studentListHTML(sc) {
   return `<div class="list">${studs.map((s, i) => {
     const st = studentStats(s, all);
     return `<button class="item" data-act="openStudent" data-id="${s.id}">
-      <div class="grow"><div class="t">${esc(s.name)}${isBoth(s, links) ? ' <span class="pill gold">Basic + Dev</span>' : ''}</div></div>
+      <div class="grow"><div class="t">${esc(s.name)}${isBoth(s, links) ? ' <span class="pill gold">' + esc(studentLabel(s, links)) + '</span>' : ''}</div></div>
       <span class="pill ${st.pct == null ? '' : st.pct >= 75 ? 'ok' : st.pct < 40 ? 'bad' : 'gold'}">${st.tot ? st.att + '/' + st.tot : '–'}</span></button>`;
   }).join('')}</div>`;
 }
@@ -290,7 +290,7 @@ function viewSchool() {
   else body = viewReports(sc);
   return `<div class="topbar">
       <button class="iconbtn" data-act="backToSchools" aria-label="Back">${icon('left')}</button>
-      <div class="grow"><h1>${esc(sc.name)}</h1><div class="sub">${isDev(sc) ? 'Development class' : 'Training place'}</div></div>
+      <div class="grow"><h1>${esc(sc.name)}</h1><div class="sub">${isDev(sc) ? 'Development class · ' + (devCode(sc) === 'A' ? 'Afternoon' : 'Morning') : 'Training place'}</div></div>
       <button class="iconbtn" data-act="editSchool" aria-label="Edit school">${icon('edit')}</button>
     </div>${seg}${body}`;
 }
@@ -434,7 +434,7 @@ function viewSettings() {
       ${e.schoolId !== 'all' && e.schoolId !== '__combo' ? `<div><label class="f">Student</label><select data-bind="exp.studentId">${opts([['all', 'All students'], ...studs.map(x => [x.id, x.name])], e.studentId)}</select></div>` : ''}
       <div><label class="f">Period</label>${periodControls('exp.period')}</div>
       <div class="row"><button class="btn primary grow" data-act="exportXlsx">Download Excel</button><button class="btn grow" data-act="exportCsv">Download CSV</button></div>
-      <div class="hint">Excel has several sheets: Summary, All Schools (one block per school), a sheet per school, Records and Sessions (with descriptions). “Basic + Development” shows students who are in both a basic and a development school, side by side. CSV is the Records list.</div>
+      <div class="hint">Excel has several sheets: Summary, All Schools (one block per school), a sheet per school, Records and Sessions (with descriptions). Rows have borders and a colour for each school. “Basic + Development” shows students who are in both a basic and a development school, side by side. CSV is the Records list.</div>
     </div>
 
     <div class="card stack"><h2>Google Sheets sync</h2>
@@ -509,12 +509,14 @@ function modalAddSchool() {
   showModal(`<h3>Add school</h3><label class="f">School / training place name</label>
     <input type="text" id="m-name" data-enter="1" placeholder="e.g. SJK(C) Seremban" autocomplete="off">
     <label class="f" style="margin-top:12px">Class type</label><select id="m-type"><option value="basic">Basic class (Mon–Fri)</option><option value="dev">Development class (Saturday)</option></select>
+    <div id="m-sess-row" style="display:none;margin-top:12px"><label class="f">Session</label><select id="m-sess"><option value="M">Morning</option><option value="A">Afternoon</option></select></div>
     <div class="actions"><button class="btn" data-act="closeModal">Cancel</button><button class="btn primary" data-act="saveAddSchool">Add</button></div>`);
 }
 function modalEditSchool() {
   const sc = getSchool(ui.schoolId);
   showModal(`<h3>Edit school</h3><label class="f">Name</label><input type="text" id="m-name" data-enter="1" value="${esc(sc.name)}">
     <label class="f" style="margin-top:12px">Class type</label><select id="m-type"><option value="basic" ${isDev(sc) ? '' : 'selected'}>Basic class (Mon–Fri)</option><option value="dev" ${isDev(sc) ? 'selected' : ''}>Development class (Saturday)</option></select>
+    <div id="m-sess-row" style="${isDev(sc) ? '' : 'display:none;'}margin-top:12px"><label class="f">Session</label><select id="m-sess"><option value="M" ${devCode(sc) === 'M' ? 'selected' : ''}>Morning</option><option value="A" ${devCode(sc) === 'A' ? 'selected' : ''}>Afternoon</option></select></div>
     <div class="actions"><button class="btn danger" data-act="delSchool">Delete</button><button class="btn primary" data-act="saveSchool">Save</button></div>
     <div class="actions" style="margin-top:8px"><button class="btn" data-act="closeModal">Close</button></div>`);
 }
@@ -535,7 +537,7 @@ function modalStudent(id) {
     comboRows = `<div class="kv"><span>All classes combined</span><b>${ca} of ${ct}${ct ? ' (' + Math.round(ca * 100 / ct) + '%)' : ''}</b></div><div class="kv"><span>Also listed in</span><b style="text-align:right">${linked.filter(x => x.id !== st.id).map(x => esc((getSchool(x.schoolId) || {}).name || '')).join(', ')}</b></div>`;
   }
   const hist = all.filter(s => !s.holiday && s.marks && s.marks[st.id] !== undefined).reverse();
-  showModal(`<h3>${esc(st.name)}${isBoth(st, classLinks()) ? ' <span class="pill gold">Basic + Dev</span>' : ''}</h3><div class="hint" style="margin:-8px 0 10px">${esc(sc ? sc.name : '')}</div>
+  showModal(`<h3>${esc(st.name)}${isBoth(st, classLinks()) ? ' <span class="pill gold">' + esc(studentLabel(st, classLinks())) + '</span>' : ''}</h3><div class="hint" style="margin:-8px 0 10px">${esc(sc ? sc.name : '')}</div>
     <div class="card" style="padding:8px 12px">
       <div class="kv"><span>All time</span><b>${a.att} of ${a.tot} classes${a.pct == null ? '' : ' (' + a.pct + '%)'}</b></div>
       <div class="kv"><span>${periodLabel(ui.period)}</span><b>${c.att} of ${c.tot}${c.pct == null ? '' : ' (' + c.pct + '%)'}</b></div>${comboRows}</div>
@@ -594,52 +596,101 @@ const autoWidth = rows => {
   rows.forEach(r => r.forEach((v, i) => { const l = String(v ?? '').split('\n').reduce((m, x) => Math.max(m, x.length), 0); w[i] = Math.min(40, Math.max(w[i] || 8, l + 2)); }));
   return w.map(x => ({ wch: x }));
 };
-function matrixRows(sc, studs, sess) {
-  const rows = [[sc.name]];
-  const head = ['Student', ...sess.map(s => fmtDateShort(s.date)), 'Attended', 'Classes', '%'];
-  rows.push(head);
-  rows.push(['Time', ...sess.map(s => s.holiday ? 'HOLIDAY' : fmtTime(s.time)), '', '', '']);
+
+/* ---- labels and colours used in Excel and Google Sheets ---- */
+const PALETTE = ['DDEBF7', 'EDEDED', 'D9F2F7', 'F3E9DC', 'E6F0DC', 'F0E1EC', 'DCE3F0', 'F5F0D8'];
+const CLASS_COLORS = { 'Basic': 'FFE699', 'M Dev': 'A9D08E', 'A Dev': 'F4A6A6' };
+const COMBO_COLOR = 'B4A7D6';
+const devCode = sc => sc && sc.session === 'A' ? 'A' : 'M';
+const schoolLabel = sc => isDev(sc) ? devCode(sc) + ' Dev' : 'Basic';
+const schoolColor = sc => PALETTE[((sc && sc.ci) || 0) % PALETTE.length];
+const labelColor = l => CLASS_COLORS[l] || COMBO_COLOR;
+function nextColorIdx() {
+  const cnt = PALETTE.map(() => 0);
+  data.schools.forEach(sc => { if (sc.ci !== undefined) cnt[sc.ci % PALETTE.length]++; });
+  return cnt.indexOf(Math.min(...cnt));
+}
+function studentLabel(st, links) {
+  const e = links.get(norm(st.name)); if (!e) return '';
+  const parts = []; if (e.b) parts.push('Basic');
+  ['M', 'A'].forEach(c => { if (e.codes.has(c)) parts.push(c + ' Dev'); });
+  return parts.join(' + ');
+}
+
+/* ---- sheet description (used for Excel and for Google Sheets) ---- */
+const newSheet = (name, extra) => Object.assign({ name, rows: [], bold: [], fills: [], grid: [], outline: [], freeze: 0 }, extra);
+const padRow = (row, w) => { const r = row.slice(); while (r.length < w) r.push(''); return r; };
+function addRow(sh, row, o) {
+  o = o || {};
+  const r = sh.rows.length; sh.rows.push(row);
+  if (o.bold) sh.bold.push(r);
+  if (o.fill) sh.fills.push({ r, c0: 0, c1: row.length - 1, color: o.fill });
+  (o.cells || []).forEach(([c, color]) => sh.fills.push({ r, c0: c, c1: c, color }));
+  return r;
+}
+function matrixBlock(sc, studs, sess, links) {
+  const blk = newSheet(sc.name), color = schoolColor(sc), W = 2 + sess.length + 3;
+  addRow(blk, padRow([sc.name + ' · ' + schoolLabel(sc)], W), { bold: true, fill: color });
+  addRow(blk, ['Student', 'Class', ...sess.map(x => fmtDateShort(x.date)), 'Attended', 'Classes', '%'], { bold: true, fill: color });
+  addRow(blk, ['Time', '', ...sess.map(x => x.holiday ? 'HOLIDAY' : fmtTime(x.time)), '', '', ''], { fill: color });
   for (const st of studs) {
-    const x = studentStats(st, sess);
-    rows.push([st.name, ...sess.map(s => s.holiday ? '–' : s.marks[st.id] === true ? '✓' : s.marks[st.id] === false ? '✗' : ''), x.att, x.tot, x.pct == null ? '' : x.pct]);
+    const x = studentStats(st, sess), sl = studentLabel(st, links);
+    addRow(blk, [st.name, sl, ...sess.map(z => z.holiday ? '–' : z.marks[st.id] === true ? '✓' : z.marks[st.id] === false ? '✗' : ''), x.att, x.tot, x.pct == null ? '' : x.pct],
+      { fill: color, cells: [[1, labelColor(sl)]] });
   }
-  rows.push(['Description', ...sess.map(s => s.holiday ? (s.label || '') : (s.note || '')), '', '', '']);
-  rows.push(['Coach', ...sess.map(s => s.holiday ? '' : (s.coach || '')), '', '', '']);
-  return rows;
+  addRow(blk, ['Description', '', ...sess.map(x => x.holiday ? (x.label || '') : (x.note || '')), '', '', ''], { fill: color });
+  addRow(blk, ['Coach', '', ...sess.map(x => x.holiday ? '' : (x.coach || '')), '', '', ''], { fill: color });
+  sess.forEach((x, j) => { if (x.holiday) for (let r = 1; r < blk.rows.length; r++) blk.fills.push({ r, c0: 2 + j, c1: 2 + j, color: 'D9D9D9' }); });
+  blk.grid.push({ r: 0, c: 0, h: blk.rows.length, w: W });
+  blk.outline.push({ r: 0, c: 0, h: blk.rows.length, w: W });
+  return blk;
+}
+function appendBlock(all, blk) {
+  if (all.rows.length) all.rows.push([]);
+  const o = all.rows.length;
+  blk.rows.forEach(r => all.rows.push(r));
+  blk.bold.forEach(r => all.bold.push(r + o));
+  ['fills', 'grid', 'outline'].forEach(k => blk[k].forEach(f => all[k].push(Object.assign({}, f, { r: f.r + o }))));
 }
 function buildSheets(opt) {
   const schoolId = opt.schoolId || 'all', studentId = opt.studentId || 'all', period = opt.period || { type: 'all' };
-  const schools = sortedSchools().filter(s => schoolId === 'all' || s.id === schoolId);
-  const sum = [['School', 'Student', 'Classes attended', 'Classes recorded', 'Absent', 'Attendance %']];
-  const rec = [['School', 'Student', 'Date', 'Day', 'Time', 'Status', 'Description', 'Coach', 'Class type']];
-  const ses = [['School', 'Date', 'Day', 'Time', 'Type', 'Holiday reason', 'Present', 'Absent', 'Description', 'Coach', 'Class type']];
-  const all = [], per = [];
+  const links = classLinks();
+  const schools = sortedSchools().filter(x => schoolId === 'all' || x.id === schoolId);
+  const sum = newSheet('Summary', { freeze: 1 }), rec = newSheet('Records', { freeze: 1 }), ses = newSheet('Sessions', { freeze: 1 });
+  const all = newSheet('All Schools'), per = [];
+  addRow(sum, ['School', 'Class', 'Student', 'Classes attended', 'Classes recorded', 'Absent', 'Attendance %'], { bold: true });
+  addRow(rec, ['School', 'Student', 'Class', 'Date', 'Day', 'Time', 'Status', 'Description', 'Coach'], { bold: true });
+  addRow(ses, ['School', 'Class', 'Date', 'Day', 'Time', 'Type', 'Holiday reason', 'Present', 'Absent', 'Description', 'Coach'], { bold: true });
   for (const sc of schools) {
-    let studs = sortedStudents(sc.id); if (studentId !== 'all') studs = studs.filter(s => s.id === studentId);
-    const sess = sessionsFor(sc.id, period);
-    const block = matrixRows(sc, studs, sess);
-    all.push(...block, []); per.push({ name: sc.name, rows: block });
-    for (const st of studs) {
-      const x = studentStats(st, sess);
-      sum.push([sc.name, st.name, x.att, x.tot, x.tot - x.att, x.pct == null ? '' : x.pct]);
-      for (const s of sess) {
-        if (s.holiday || s.marks[st.id] === undefined) continue;
-        rec.push([sc.name, st.name, s.date, DOWS[dowOf(s.date)], fmtTime(s.time), s.marks[st.id] ? 'Present' : 'Absent', s.note || '', s.coach || '', isDev(sc) ? 'Development' : 'Basic']);
+    let studs = sortedStudents(sc.id); if (studentId !== 'all') studs = studs.filter(x => x.id === studentId);
+    const sess = sessionsFor(sc.id, period), color = schoolColor(sc), lab = schoolLabel(sc);
+    const blk = matrixBlock(sc, studs, sess, links);
+    appendBlock(all, blk); per.push(blk);
+    const r0 = sum.rows.length;
+    studs.forEach((st, i) => {
+      const x = studentStats(st, sess), sl = studentLabel(st, links);
+      addRow(sum, [i === 0 ? sc.name : '', sl, st.name, x.att, x.tot, x.tot - x.att, x.pct == null ? '' : x.pct], { fill: color, cells: [[1, labelColor(sl)]] });
+      for (const z of sess) {
+        if (z.holiday || z.marks[st.id] === undefined) continue;
+        addRow(rec, [sc.name, st.name, lab, z.date, DOWS[dowOf(z.date)], fmtTime(z.time), z.marks[st.id] ? 'Present' : 'Absent', z.note || '', z.coach || ''], { fill: color, cells: [[2, labelColor(lab)]] });
       }
-    }
-    for (const s of sess) {
-      let p = 0, a = 0; studs.forEach(st => { if (s.marks[st.id] === true) p++; else if (s.marks[st.id] === false) a++; });
-      ses.push([sc.name, s.date, DOWS[dowOf(s.date)], s.holiday ? '' : fmtTime(s.time), s.holiday ? 'Holiday' : 'Class', s.holiday ? (s.label || '') : '', s.holiday ? '' : p, s.holiday ? '' : a, s.holiday ? '' : (s.note || ''), s.holiday ? '' : (s.coach || ''), isDev(sc) ? 'Development' : 'Basic']);
+    });
+    if (studs.length) sum.outline.push({ r: r0, c: 0, h: studs.length, w: 7 });
+    for (const z of sess) {
+      let p = 0, a = 0; studs.forEach(st => { if (z.marks[st.id] === true) p++; else if (z.marks[st.id] === false) a++; });
+      addRow(ses, [sc.name, lab, z.date, DOWS[dowOf(z.date)], z.holiday ? '' : fmtTime(z.time), z.holiday ? 'Holiday' : 'Class', z.holiday ? (z.label || '') : '', z.holiday ? '' : p, z.holiday ? '' : a, z.holiday ? '' : (z.note || ''), z.holiday ? '' : (z.coach || '')], { fill: color, cells: [[1, labelColor(lab)]] });
     }
   }
+  [[sum, 7], [rec, 9], [ses, 11]].forEach(([sh, w]) => sh.grid.push({ r: 0, c: 0, h: sh.rows.length, w }));
+  if (!all.rows.length) all.rows.push(['No data']);
   const used = new Set(['summary', 'all schools', 'records', 'sessions']);
-  const sheets = [{ name: 'Summary', rows: sum }, { name: 'All Schools', rows: all.length ? all : [['No data']] }];
-  if (schools.length > 1) per.forEach(p => {
-    let base = p.name.replace(/[\\\/\?\*\[\]:]/g, ' ').trim().slice(0, 28) || 'School', nm = base, i = 2;
+  const sheets = [sum, all];
+  if (schools.length > 1) per.forEach(blk => {
+    let base = blk.name.replace(/[\\\/\?\*\[\]:]/g, ' ').trim().slice(0, 28) || 'School', nm = base, i = 2;
     while (used.has(nm.toLowerCase())) nm = base.slice(0, 27) + ' ' + i++;
-    used.add(nm.toLowerCase()); sheets.push({ name: nm, rows: p.rows });
+    used.add(nm.toLowerCase()); sheets.push(Object.assign({}, blk, { name: nm }));
   });
-  sheets.push({ name: 'Records', rows: rec }, { name: 'Sessions', rows: ses });
+  sheets.push(rec, ses);
   return sheets;
 }
 function comboGroups() {
@@ -652,38 +703,73 @@ function comboGroups() {
   return [...g.values()].filter(e => e.b && e.d).sort((a, b) => collator.compare(a.name, b.name));
 }
 function buildCombinedSheets(period) {
-  const groups = comboGroups();
+  const groups = comboGroups(), links = classLinks();
   if (!groups.length) return [
-    { name: 'Basic + Development', rows: [['No student is listed in both a Basic school and a Development school yet.'], ['Tip: use “Copy from another school” when adding students to the Development class, so the names match.']] },
-    { name: 'Combined Summary', rows: [['No data']] }, { name: 'Records', rows: [['No data']] }];
-  const schoolIds = new Set(); groups.forEach(g => g.entries.forEach(s => schoolIds.add(s.schoolId)));
-  const cols = data.sessions.filter(s => schoolIds.has(s.schoolId) && !s.holiday && inPeriod(s.date, period) &&
-    groups.some(g => g.entries.some(st => st.schoolId === s.schoolId && s.marks[st.id] !== undefined))).sort(cmpSession);
+    newSheet('Basic + Development', { rows: [['No student is listed in both a Basic school and a Development school yet.'], ['Tip: use “Copy from another school” when adding students to the Development class, so the names match.']] }),
+    newSheet('Combined Summary', { rows: [['No data']] }), newSheet('Records', { rows: [['No data']] })];
+  const schoolIds = new Set(); groups.forEach(g => g.entries.forEach(x => schoolIds.add(x.schoolId)));
+  const cols = data.sessions.filter(x => schoolIds.has(x.schoolId) && !x.holiday && inPeriod(x.date, period) &&
+    groups.some(g => g.entries.some(st => st.schoolId === x.schoolId && x.marks[st.id] !== undefined))).sort(cmpSession);
   const tails = ['Basic attended', 'Basic classes', 'Dev attended', 'Dev classes', 'Total attended', 'Total classes', '%'];
   const blank = tails.map(() => '');
-  const matrix = [['Basic + Development'],
-    ['Student', ...cols.map(s => fmtDateShort(s.date)), ...tails],
-    ['Time', ...cols.map(s => fmtTime(s.time)), ...blank],
-    ['Class', ...cols.map(s => isDev(getSchool(s.schoolId)) ? 'Development' : 'Basic'), ...blank],
-    ['School', ...cols.map(s => getSchool(s.schoolId).name), ...blank]];
-  const summary = [['Student', 'Basic school(s)', 'Development school(s)', ...tails]];
-  const rec = [['Student', 'School', 'Class type', 'Date', 'Day', 'Time', 'Status', 'Description', 'Coach']];
+  const colSchool = cols.map(x => getSchool(x.schoolId));
+  const colCells = colSchool.map((sc, j) => [2 + j, schoolColor(sc)]);
+  const classCells = colSchool.map((sc, j) => [2 + j, labelColor(schoolLabel(sc))]);
+  const W = 2 + cols.length + tails.length;
+  const M = newSheet('Basic + Development'), S = newSheet('Combined Summary', { freeze: 1 }), R = newSheet('Records', { freeze: 1 });
+  addRow(M, padRow(['Basic + Development'], W), { bold: true });
+  addRow(M, ['Student', 'Class', ...cols.map(x => fmtDateShort(x.date)), ...tails], { bold: true, cells: colCells });
+  addRow(M, ['Time', '', ...cols.map(x => fmtTime(x.time)), ...blank], { cells: colCells });
+  addRow(M, ['Class', '', ...colSchool.map(sc => schoolLabel(sc)), ...blank], { cells: classCells });
+  addRow(M, ['School', '', ...colSchool.map(sc => sc.name), ...blank], { cells: colCells });
+  addRow(S, ['Student', 'Class', 'Basic school(s)', 'Development school(s)', ...tails], { bold: true });
+  addRow(R, ['Student', 'School', 'Class', 'Date', 'Day', 'Time', 'Status', 'Description', 'Coach'], { bold: true });
   for (const g of groups) {
     let ba = 0, bt = 0, da = 0, dt = 0;
     g.entries.forEach(st => { const x = studentStats(st, sessionsFor(st.schoolId, period)); if (isDev(getSchool(st.schoolId))) { da += x.att; dt += x.tot; } else { ba += x.att; bt += x.tot; } });
-    const ta = ba + da, tt = bt + dt, pct = tt ? Math.round(ta * 100 / tt) : '';
-    matrix.push([g.name, ...cols.map(s => { const en = g.entries.find(st => st.schoolId === s.schoolId); const v = en ? s.marks[en.id] : undefined; return v === true ? '✓' : v === false ? '✗' : ''; }), ba, bt, da, dt, ta, tt, pct]);
+    const ta = ba + da, tt = bt + dt, pct = tt ? Math.round(ta * 100 / tt) : '', sl = studentLabel(g.entries[0], links);
+    addRow(M, [g.name, sl, ...cols.map(x => { const en = g.entries.find(st => st.schoolId === x.schoolId); const v = en ? x.marks[en.id] : undefined; return v === true ? '✓' : v === false ? '✗' : ''; }), ba, bt, da, dt, ta, tt, pct],
+      { cells: [[1, labelColor(sl)], ...colCells] });
     const names = d => g.entries.filter(st => isDev(getSchool(st.schoolId)) === d).map(st => getSchool(st.schoolId).name).join(', ');
-    summary.push([g.name, names(false), names(true), ba, bt, da, dt, ta, tt, pct]);
-    g.entries.forEach(st => { const sc = getSchool(st.schoolId);
-      sessionsFor(st.schoolId, period).forEach(s => { if (s.holiday || s.marks[st.id] === undefined) return;
-        rec.push([g.name, sc.name, isDev(sc) ? 'Development' : 'Basic', s.date, DOWS[dowOf(s.date)], fmtTime(s.time), s.marks[st.id] ? 'Present' : 'Absent', s.note || '', s.coach || '']); }); });
+    addRow(S, [g.name, sl, names(false), names(true), ba, bt, da, dt, ta, tt, pct], { cells: [[1, labelColor(sl)]] });
+    g.entries.forEach(st => { const sc = getSchool(st.schoolId), lab = schoolLabel(sc);
+      sessionsFor(st.schoolId, period).forEach(x => { if (x.holiday || x.marks[st.id] === undefined) return;
+        addRow(R, [g.name, sc.name, lab, x.date, DOWS[dowOf(x.date)], fmtTime(x.time), x.marks[st.id] ? 'Present' : 'Absent', x.note || '', x.coach || ''], { fill: schoolColor(sc), cells: [[2, labelColor(lab)]] }); }); });
   }
-  return [{ name: 'Basic + Development', rows: matrix }, { name: 'Combined Summary', rows: summary }, { name: 'Records', rows: rec }];
+  M.grid.push({ r: 0, c: 0, h: M.rows.length, w: W });
+  S.grid.push({ r: 0, c: 0, h: S.rows.length, w: 11 });
+  R.grid.push({ r: 0, c: 0, h: R.rows.length, w: 9 });
+  return [M, S, R];
 }
 function getExportSheets() {
   const e = ui.exp;
   return e.schoolId === '__combo' ? buildCombinedSheets(e.period) : buildSheets({ schoolId: e.schoolId, studentId: e.studentId, period: e.period });
+}
+function styledSheet(spec) {
+  const rows = spec.rows, n = rows.length, w = rows.reduce((m, r) => Math.max(m, r.length), 0);
+  const ws = XLSX.utils.aoa_to_sheet(rows);
+  ws['!cols'] = autoWidth(rows);
+  const bd = {}, bg = {}, bold = new Set(spec.bold || []);
+  const side = (r, c, k, style, rgb) => { const key = r + ',' + c; (bd[key] = bd[key] || {})[k] = { style, color: { rgb } }; };
+  (spec.grid || []).forEach(g => { for (let r = g.r; r < g.r + g.h; r++) for (let c = g.c; c < g.c + g.w; c++) ['top', 'bottom', 'left', 'right'].forEach(k => side(r, c, k, 'thin', '9E9E9E')); });
+  (spec.outline || []).forEach(g => {
+    for (let c = g.c; c < g.c + g.w; c++) { side(g.r, c, 'top', 'medium', '000000'); side(g.r + g.h - 1, c, 'bottom', 'medium', '000000'); }
+    for (let r = g.r; r < g.r + g.h; r++) { side(r, g.c, 'left', 'medium', '000000'); side(r, g.c + g.w - 1, 'right', 'medium', '000000'); }
+  });
+  (spec.fills || []).forEach(f => { for (let c = f.c0; c <= f.c1; c++) bg[f.r + ',' + c] = f.color; });
+  for (let r = 0; r < n; r++) for (let c = 0; c < w; c++) {
+    const key = r + ',' + c;
+    if (!bd[key] && !bg[key] && !bold.has(r)) continue;
+    const addr = XLSX.utils.encode_cell({ r, c });
+    const cell = ws[addr] || (ws[addr] = { t: 's', v: '' });
+    const st = { font: { name: 'Calibri', sz: 11, bold: bold.has(r) }, alignment: { vertical: 'center' } };
+    if (bg[key]) st.fill = { patternType: 'solid', fgColor: { rgb: bg[key] } };
+    if (bd[key]) st.border = bd[key];
+    if (typeof cell.v === 'string' && cell.v && cell.v.length <= 2) st.alignment.horizontal = 'center';
+    cell.s = st;
+  }
+  ws['!ref'] = XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: Math.max(n - 1, 0), c: Math.max(w - 1, 0) } });
+  return ws;
 }
 function download(name, blob) {
   const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name;
@@ -695,10 +781,10 @@ function exportName(ext) {
 }
 function exportXlsx() {
   if (!data.schools.length) return toast('Nothing to export yet.');
-  if (typeof XLSX === 'undefined') return toast('Excel library missing. Check xlsx.mini.min.js.');
+  if (typeof XLSX === 'undefined') return toast('Excel library missing. Check xlsx.style.min.js.');
   const sheets = getExportSheets();
   const wb = XLSX.utils.book_new();
-  sheets.forEach(s => { const ws = XLSX.utils.aoa_to_sheet(s.rows); ws['!cols'] = autoWidth(s.rows); XLSX.utils.book_append_sheet(wb, ws, s.name); });
+  sheets.forEach(s => { XLSX.utils.book_append_sheet(wb, styledSheet(s), s.name); });
   const out = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
   download(exportName('xlsx'), new Blob([out], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }));
   toast('Excel file saved to Downloads');
@@ -810,12 +896,12 @@ const actions = {
   saveAddSchool() {
     const n = mval('m-name').trim(); if (!n) return toast('Please type a name.');
     if (data.schools.some(s => norm(s.name) === norm(n))) return toast('That school already exists.');
-    data.schools.push(touch({ id: uid(), name: n, type: mval('m-type') === 'dev' ? 'dev' : 'basic', createdAt: Date.now() })); save(); closeModal(); render(); toast('School added');
+    data.schools.push(touch({ id: uid(), name: n, type: mval('m-type') === 'dev' ? 'dev' : 'basic', session: mval('m-type') === 'dev' && mval('m-sess') === 'A' ? 'A' : 'M', ci: nextColorIdx(), createdAt: Date.now() })); save(); closeModal(); render(); toast('School added');
   },
   editSchool: modalEditSchool,
   saveSchool() {
     const n = mval('m-name').trim(); if (!n) return toast('Please type a name.');
-    const sc = getSchool(ui.schoolId); sc.name = n; sc.type = mval('m-type') === 'dev' ? 'dev' : 'basic'; touch(sc); save(); closeModal(); render();
+    const sc = getSchool(ui.schoolId); sc.name = n; sc.type = mval('m-type') === 'dev' ? 'dev' : 'basic'; sc.session = mval('m-sess') === 'A' ? 'A' : 'M'; touch(sc); save(); closeModal(); render();
   },
   delSchool() {
     const sc = getSchool(ui.schoolId);
@@ -955,6 +1041,7 @@ document.addEventListener('input', onBind);
 document.addEventListener('change', e => {
   if (e.target.id === 'restoreFile' && e.target.files[0]) { restoreFromFile(e.target.files[0]); return; }
   if (e.target.id === 'm-src') { modalCopy(e.target.value); return; }
+  if (e.target.id === 'm-type') { const r = $('#m-sess-row'); if (r) r.style.display = e.target.value === 'dev' ? '' : 'none'; return; }
   onBind(e);
 });
 document.addEventListener('keydown', e => {
@@ -980,6 +1067,9 @@ function migrate() {
     const c = touch({ id: uid(), name: data.settings.coach, createdAt: Date.now() });
     data.coaches.push(c); data.settings.coachId = c.id; save();
   }
+  let changed = false;
+  sortedSchools().forEach(sc => { if (sc.ci === undefined) { sc.ci = nextColorIdx(); changed = true; } });
+  if (changed) save();
 }
 function showUpdate() {
   if ($('#update')) return;

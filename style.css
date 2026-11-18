@@ -199,3 +199,9 @@ label.pick.dis{opacity:.45}
 @keyframes barGrow{to{transform:scaleX(1)}}
 @keyframes splashOut{to{opacity:0;visibility:hidden}}
 @media (prefers-reduced-motion:reduce){#splash{display:none}}
+
+/* v1.4 sync progress */
+.prog{height:14px;border-radius:9px;background:#120e07;border:1px solid var(--line);overflow:hidden}
+.prog i{display:block;height:100%;min-width:4px;border-radius:9px;background:var(--gold-grad);transition:width .4s ease}
+.prog.running i{background-image:repeating-linear-gradient(45deg,rgba(255,255,255,.28) 0 8px,rgba(255,255,255,0) 8px 16px),var(--gold-grad);background-size:32px 32px,100% 100%;animation:stripes 1s linear infinite}
+@keyframes stripes{to{background-position:32px 0,0 0}}

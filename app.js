@@ -4,7 +4,7 @@
 'use strict';
 
 /* ============ helpers ============ */
-const APP_VERSION = '1.3.0';
+const APP_VERSION = '1.4.0';
 const TZ = 'Asia/Kuala_Lumpur';
 const DB_NAME = 'mt-attendance', STORE = 'kv', KEY = 'data';
 const MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
@@ -203,9 +203,8 @@ function yearList() {
 function periodControls(prefix) {
   const p = prefix.split('.').reduce((o, k) => o[k], ui);
   return `<div class="row period">
-    <select data-bind="${prefix}.type" data-rerender="1" aria-label="Period">${opts([['month', 'Month'], ['year', 'Whole year'], ['all', 'All time']], p.type)}</select>
-    ${p.type === 'month' ? `<select data-bind="${prefix}.m" data-num="1" data-rerender="1" aria-label="Month">${monthOpts(p.m)}</select>` : ''}
-    ${p.type !== 'all' ? `<select data-bind="${prefix}.y" data-num="1" data-rerender="1" aria-label="Year">${opts(yearList(), p.y)}</select>` : ''}
+    <select data-pc="${prefix}" data-pk="y" aria-label="Year">${opts([['all', 'All time'], ...yearList()], p.type === 'all' ? 'all' : p.y)}</select>
+    ${p.type !== 'all' ? `<select data-pc="${prefix}" data-pk="m" aria-label="Month">${opts([[0, 'Whole year'], ...MONTHS.map((m, i) => [i + 1, m])], p.type === 'month' ? p.m : 0)}</select>` : ''}
   </div>`;
 }
 
@@ -434,14 +433,15 @@ function viewSettings() {
       ${e.schoolId !== 'all' && e.schoolId !== '__combo' ? `<div><label class="f">Student</label><select data-bind="exp.studentId">${opts([['all', 'All students'], ...studs.map(x => [x.id, x.name])], e.studentId)}</select></div>` : ''}
       <div><label class="f">Period</label>${periodControls('exp.period')}</div>
       <div class="row"><button class="btn primary grow" data-act="exportXlsx">Download Excel</button><button class="btn grow" data-act="exportCsv">Download CSV</button></div>
-      <div class="hint">Excel has several sheets: Summary, All Schools (one block per school), a sheet per school, Records and Sessions (with descriptions). Rows have borders and a colour for each school. “Basic + Development” shows students who are in both a basic and a development school, side by side. CSV is the Records list.</div>
+      <div class="hint">Pick a year, then a month, to get every class date of that month as a column, with a ✓ or ✗ for each student. Excel has a Summary, All Schools (one block per school), a sheet per school, Records and Sessions. “Basic + Development” shows students who are in both a basic and a development school, side by side. CSV is the Records list.</div>
     </div>
 
     <div class="card stack"><h2>Google Sheets sync</h2>
       <div class="hint">Sync downloads the other coach’s attendance, merges it with yours, then uploads everything to your Google Sheet. ${sheetsOn ? '' : '<b>Not set up yet.</b> Fill in the two boxes below first.'}</div>
       <div><label class="f">Web App URL</label><input type="url" value="${esc(s.sheetsUrl)}" data-bind="settings.sheetsUrl" data-save="1" placeholder="https://script.google.com/macros/s/…/exec"></div>
       <div><label class="f">Secret key (same as in the script)</label><input type="text" value="${esc(s.sheetsKey)}" data-bind="settings.sheetsKey" data-save="1" placeholder="your-secret-word"></div>
-      <div class="row"><button class="btn primary grow" data-act="syncNow" ${sheetsOn ? '' : 'disabled'}>Sync now</button><button class="btn grow" data-act="testSync" ${sheetsOn ? '' : 'disabled'}>Test</button></div>
+      <div class="row"><button class="btn primary grow" data-act="syncNow" ${sheetsOn && !(ui.sync && ui.sync.running) ? '' : 'disabled'}>Sync now</button><button class="btn grow" data-act="testSync" ${sheetsOn && !(ui.sync && ui.sync.running) ? '' : 'disabled'}>Test</button></div>
+      ${syncProgressHTML()}
       <button class="btn small" data-act="sheetsHelp">How to set this up</button>
     </div>
 
@@ -631,11 +631,11 @@ function addRow(sh, row, o) {
 function matrixBlock(sc, studs, sess, links) {
   const blk = newSheet(sc.name), color = schoolColor(sc), W = 2 + sess.length + 3;
   addRow(blk, padRow([sc.name + ' · ' + schoolLabel(sc)], W), { bold: true, fill: color });
-  addRow(blk, ['Student', 'Class', ...sess.map(x => fmtDateShort(x.date)), 'Attended', 'Classes', '%'], { bold: true, fill: color });
+  addRow(blk, ['Student', 'Class', ...sess.map(x => fmtDateShort(x.date)), 'Attended', 'Absent', '%'], { bold: true, fill: color });
   addRow(blk, ['Time', '', ...sess.map(x => x.holiday ? 'HOLIDAY' : fmtTime(x.time)), '', '', ''], { fill: color });
   for (const st of studs) {
     const x = studentStats(st, sess), sl = studentLabel(st, links);
-    addRow(blk, [st.name, sl, ...sess.map(z => z.holiday ? '–' : z.marks[st.id] === true ? '✓' : z.marks[st.id] === false ? '✗' : ''), x.att, x.tot, x.pct == null ? '' : x.pct],
+    addRow(blk, [st.name, sl, ...sess.map(z => z.holiday ? '–' : z.marks[st.id] === true ? '✓' : z.marks[st.id] === false ? '✗' : ''), x.tot ? x.att + '/' + x.tot : '', x.tot - x.att, x.pct == null ? '' : x.pct],
       { fill: color, cells: [[1, labelColor(sl)]] });
   }
   addRow(blk, ['Description', '', ...sess.map(x => x.holiday ? (x.label || '') : (x.note || '')), '', '', ''], { fill: color });
@@ -658,7 +658,7 @@ function buildSheets(opt) {
   const schools = sortedSchools().filter(x => schoolId === 'all' || x.id === schoolId);
   const sum = newSheet('Summary', { freeze: 1 }), rec = newSheet('Records', { freeze: 1 }), ses = newSheet('Sessions', { freeze: 1 });
   const all = newSheet('All Schools'), per = [];
-  addRow(sum, ['School', 'Class', 'Student', 'Classes attended', 'Classes recorded', 'Absent', 'Attendance %'], { bold: true });
+  addRow(sum, ['School', 'Class', 'Student', 'Attended', 'Absent', 'Attendance %'], { bold: true });
   addRow(rec, ['School', 'Student', 'Class', 'Date', 'Day', 'Time', 'Status', 'Description', 'Coach'], { bold: true });
   addRow(ses, ['School', 'Class', 'Date', 'Day', 'Time', 'Type', 'Holiday reason', 'Present', 'Absent', 'Description', 'Coach'], { bold: true });
   for (const sc of schools) {
@@ -669,19 +669,19 @@ function buildSheets(opt) {
     const r0 = sum.rows.length;
     studs.forEach((st, i) => {
       const x = studentStats(st, sess), sl = studentLabel(st, links);
-      addRow(sum, [i === 0 ? sc.name : '', sl, st.name, x.att, x.tot, x.tot - x.att, x.pct == null ? '' : x.pct], { fill: color, cells: [[1, labelColor(sl)]] });
+      addRow(sum, [i === 0 ? sc.name : '', sl, st.name, x.tot ? x.att + '/' + x.tot : '', x.tot - x.att, x.pct == null ? '' : x.pct], { fill: color, cells: [[1, labelColor(sl)]] });
       for (const z of sess) {
         if (z.holiday || z.marks[st.id] === undefined) continue;
         addRow(rec, [sc.name, st.name, lab, z.date, DOWS[dowOf(z.date)], fmtTime(z.time), z.marks[st.id] ? 'Present' : 'Absent', z.note || '', z.coach || ''], { fill: color, cells: [[2, labelColor(lab)]] });
       }
     });
-    if (studs.length) sum.outline.push({ r: r0, c: 0, h: studs.length, w: 7 });
+    if (studs.length) sum.outline.push({ r: r0, c: 0, h: studs.length, w: 6 });
     for (const z of sess) {
       let p = 0, a = 0; studs.forEach(st => { if (z.marks[st.id] === true) p++; else if (z.marks[st.id] === false) a++; });
       addRow(ses, [sc.name, lab, z.date, DOWS[dowOf(z.date)], z.holiday ? '' : fmtTime(z.time), z.holiday ? 'Holiday' : 'Class', z.holiday ? (z.label || '') : '', z.holiday ? '' : p, z.holiday ? '' : a, z.holiday ? '' : (z.note || ''), z.holiday ? '' : (z.coach || '')], { fill: color, cells: [[1, labelColor(lab)]] });
     }
   }
-  [[sum, 7], [rec, 9], [ses, 11]].forEach(([sh, w]) => sh.grid.push({ r: 0, c: 0, h: sh.rows.length, w }));
+  [[sum, 6], [rec, 9], [ses, 11]].forEach(([sh, w]) => sh.grid.push({ r: 0, c: 0, h: sh.rows.length, w }));
   if (!all.rows.length) all.rows.push(['No data']);
   const used = new Set(['summary', 'all schools', 'records', 'sessions']);
   const sheets = [sum, all];
@@ -692,6 +692,43 @@ function buildSheets(opt) {
   });
   sheets.push(rec, ses);
   return sheets;
+}
+function buildYearSummary(year, links) {
+  const W = 18, sh = newSheet('Summary ' + year, { freeze: 1, text: [[3, 14]] });
+  addRow(sh, ['School', 'Class', 'Student', ...MON3, 'Absent', 'Public holidays', 'Attendance %'], { bold: true });
+  for (const sc of sortedSchools()) {
+    const studs = sortedStudents(sc.id);
+    const yr = sessionsOfSchool(sc.id).filter(x => x.date.startsWith(year + '-'));
+    if (!studs.length || !yr.length) continue;
+    const color = schoolColor(sc), r0 = sh.rows.length, hol = yr.filter(x => x.holiday).length;
+    const inMonth = m => yr.filter(x => +x.date.slice(5, 7) === m);
+    studs.forEach((st, i) => {
+      const sl = studentLabel(st, links), cells = [[1, labelColor(sl)]], months = [];
+      let att = 0, tot = 0;
+      for (let m = 1; m <= 12; m++) {
+        const x = studentStats(st, inMonth(m)); att += x.att; tot += x.tot;
+        months.push(x.tot ? x.att + '/' + x.tot : '');
+        if (x.tot) cells.push([2 + m, x.att > 0 ? 'C6EFCE' : 'D9D9D9']);
+      }
+      addRow(sh, [i === 0 ? sc.name : '', sl, st.name, ...months, tot - att, hol, tot ? Math.round(att * 100 / tot) : ''], { fill: color, cells });
+    });
+    const held = [], hols = [];
+    for (let m = 1; m <= 12; m++) { const n = inMonth(m); const h = n.filter(x => !x.holiday).length, o = n.filter(x => x.holiday).length; held.push(h ? String(h) : ''); hols.push(o ? String(o) : ''); }
+    addRow(sh, ['', '', 'Classes held', ...held, '', '', ''], { fill: 'F2F2F2' });
+    addRow(sh, ['', '', 'Public holidays', ...hols, '', hol ? String(hol) : '', ''], { fill: 'F2F2F2' });
+    sh.outline.push({ r: r0, c: 0, h: sh.rows.length - r0, w: W });
+  }
+  if (sh.rows.length === 1) addRow(sh, padRow(['No attendance recorded for ' + year + ' yet.'], W));
+  sh.grid.push({ r: 0, c: 0, h: sh.rows.length, w: W });
+  return sh;
+}
+function buildSyncSheets() {
+  const links = classLinks(), years = [...new Set(data.sessions.map(x => x.date.slice(0, 4)))].sort().reverse();
+  if (!years.length) years.push(nowKL().date.slice(0, 4));
+  const out = years.map(y => buildYearSummary(y, links));
+  const base = buildSheets({ schoolId: 'all', studentId: 'all', period: { type: 'all' } });
+  out.push(base.find(x => x.name === 'Records'), base.find(x => x.name === 'Sessions'));
+  return out;
 }
 function comboGroups() {
   const g = new Map();
@@ -826,35 +863,66 @@ function restoreFromFile(file) {
 async function callScript(method, payload) {
   const { sheetsUrl, sheetsKey } = data.settings;
   if (!sheetsUrl) throw new Error('Add the Web App URL first.');
-  let res;
-  if (method === 'GET') res = await fetch(sheetsUrl + (sheetsUrl.includes('?') ? '&' : '?') + 'key=' + encodeURIComponent(sheetsKey || '') + (payload || ''));
-  else res = await fetch(sheetsUrl, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify(Object.assign({ key: sheetsKey || '' }, payload)) });
-  const j = await res.json();
-  if (!j.ok) throw new Error(j.error || 'The script returned an error.');
-  return j;
+  const ctl = new AbortController(), timer = setTimeout(() => ctl.abort(), 150000);
+  try {
+    let res;
+    if (method === 'GET') res = await fetch(sheetsUrl + (sheetsUrl.includes('?') ? '&' : '?') + 'key=' + encodeURIComponent(sheetsKey || '') + (payload || ''), { signal: ctl.signal });
+    else res = await fetch(sheetsUrl, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify(Object.assign({ key: sheetsKey || '' }, payload)), signal: ctl.signal });
+    const j = await res.json();
+    if (!j.ok) throw new Error(j.error || 'The script returned an error.');
+    return j;
+  } catch (e) {
+    throw new Error(e.name === 'AbortError' ? 'Google did not answer in time. Check your internet and try again.' : e.message);
+  } finally { clearTimeout(timer); }
 }
+const OLD_SCRIPT_MSG = 'Your Google script is the old version. Paste the new Code.gs into Apps Script and deploy a New version (Settings → How to set this up).';
 async function testSync() {
-  try { toast('Testing…'); await callScript('GET', '&ping=1'); toast('Connected to Google Sheets ✓'); }
+  try { toast('Testing…'); const j = await callScript('GET', '&ping=1'); toast(j.v >= 2 ? 'Connected to Google Sheets ✓' : 'Connected, but the script is old. Paste the new Code.gs.'); }
   catch (e) { toast('Could not connect: ' + e.message); }
 }
+function syncProgressHTML() {
+  const y = ui.sync; if (!y) return '';
+  if (y.err) return `<div class="banner" style="border-color:rgba(229,89,79,.5);background:rgba(229,89,79,.12)"><b>Sync stopped at ${y.pct}%.</b> ${esc(y.err)}<br>Nothing is lost. Tap Sync now to try again.</div>`;
+  return `<div class="stack" style="margin-top:2px"><div class="row"><b id="syncPct">${y.pct}%</b><span class="grow hint" id="syncMsg">${esc(y.msg)}</span></div>
+    <div class="prog ${y.running ? 'running' : ''}"><i id="syncBar" style="width:${y.pct}%"></i></div>
+    ${y.running ? '<div class="hint"><b>Keep this screen open</b> until it says Done.</div>' : ''}</div>`;
+}
+function setSync(pct, msg) {
+  ui.sync = Object.assign(ui.sync || {}, { pct, msg, err: '' });
+  const b = $('#syncBar'), p = $('#syncPct'), m = $('#syncMsg');
+  if (b) b.style.width = pct + '%'; if (p) p.textContent = pct + '%'; if (m) m.textContent = msg;
+}
 async function syncNow() {
+  if (ui.sync && ui.sync.running) return;
   const me = getCoach(data.settings.coachId);
   if (!me) return toast('Choose “I am” in Coaches first.');
   const prev = data.syncLog[me.id];
+  ui.sync = { running: true, pct: 0, msg: 'Starting…', err: '' }; render();
+  let lock = null; try { if (navigator.wakeLock) lock = await navigator.wakeLock.request('screen'); } catch (e) { /* ignore */ }
   try {
-    toast('Syncing…');
+    setSync(3, 'Step 1: getting the other coach’s data…');
     const j = await callScript('GET');
+    if (!(j.v >= 2)) throw new Error(OLD_SCRIPT_MSG);
+    setSync(12, 'Step 2: merging with this phone…');
     if (j.data) applyMerged(mergeData(dataForShare(), normalize(j.data)));
     data.syncLog[me.id] = Date.now();
     await flush();
-    const sheets = buildSheets({ schoolId: 'all', studentId: 'all', period: { type: 'all' } });
-    if (comboGroups().length) sheets.push(...buildCombinedSheets({ type: 'all' }).slice(0, 2));
-    await callScript('POST', { data: dataForShare(), sheets });
-    data.settings.lastSync = Date.now(); save(); render(); toast('Synced with Google Sheets ✓');
+    setSync(18, 'Step 3: saving the shared data…');
+    await callScript('POST', { data: dataForShare() });
+    const sheets = buildSyncSheets();
+    for (let i = 0; i < sheets.length; i++) {
+      setSync(25 + Math.round(70 * i / sheets.length), `Step 4: writing sheet ${i + 1} of ${sheets.length} (${sheets[i].name})…`);
+      await callScript('POST', { sheet: sheets[i] });
+    }
+    setSync(97, 'Step 5: finishing…');
+    await callScript('POST', { finish: sheets.map(x => x.name) });
+    data.settings.lastSync = Date.now(); save();
+    setSync(100, 'Done ✓ Synced with Google Sheets');
+    ui.sync.running = false; render(); toast('Synced with Google Sheets ✓');
   } catch (e) {
     if (prev === undefined) delete data.syncLog[me.id]; else data.syncLog[me.id] = prev;
-    save(); toast('Sync failed: ' + e.message);
-  }
+    save(); ui.sync = { running: false, pct: (ui.sync && ui.sync.pct) || 0, msg: '', err: e.message }; render(); toast('Sync failed');
+  } finally { try { if (lock) lock.release(); } catch (e) { /* ignore */ } }
 }
 
 /* ============ actions ============ */
@@ -1040,6 +1108,12 @@ function onBind(e) {
 document.addEventListener('input', onBind);
 document.addEventListener('change', e => {
   if (e.target.id === 'restoreFile' && e.target.files[0]) { restoreFromFile(e.target.files[0]); return; }
+  if (e.target.dataset && e.target.dataset.pc) {
+    const p = e.target.dataset.pc.split('.').reduce((o, k) => o[k], ui), v = e.target.value;
+    if (e.target.dataset.pk === 'y') { if (v === 'all') p.type = 'all'; else { p.y = +v; if (p.type === 'all') p.type = 'year'; } }
+    else if (+v === 0) p.type = 'year'; else { p.type = 'month'; p.m = +v; }
+    render(); return;
+  }
   if (e.target.id === 'm-src') { modalCopy(e.target.value); return; }
   if (e.target.id === 'm-type') { const r = $('#m-sess-row'); if (r) r.style.display = e.target.value === 'dev' ? '' : 'none'; return; }
   onBind(e);
@@ -1090,6 +1164,6 @@ function showUpdate() {
       document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') reg.update().catch(() => {}); });
     }).catch(() => {});
   }
-  window.__mt = { get data() { return data; }, ui, buildSheets, buildCombinedSheets, mergeData, studentStats, actions, nowKL, APP_VERSION };
+  window.__mt = { get data() { return data; }, ui, buildSheets, buildCombinedSheets, buildSyncSheets, buildYearSummary, classLinks, mergeData, studentStats, actions, nowKL, APP_VERSION };
 })();
 })();
